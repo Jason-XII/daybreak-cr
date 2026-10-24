@@ -46,16 +46,29 @@ and a kit that replicates the result** (our converter at the versions used, the 
 the release `conversion-2026-10-24` of ClashAlpha/clapha-engine. For future
 battles: save each data version when it goes live (its fingerprint changes) and none has to be rebuilt.
 
-## Running it on the schema-5 dump
+## Converting the 770k (ClashAlpha/RoyaleAPI-Replays)
 
-1. `python clapha-engine/crx/replay_audit/schema5_json.py DUMP OUT` -> one JSON-lines file per window (keeps Ranked,
-   Ladder and Grand Challenge; drops River Race, friendlies, tournaments, showdowns, Classic Challenge).
-2. `python tools/assign_by_date.py assignment.jsonl OUT` -> each battle's data version (+ `alt` on update days).
-3. `python convert.py --assignment assignment.jsonl --replays OUT --engine d19 ENGINES/160402020 DATA/d19 --engine d22 ...
-   --clapha-engine ~/clapha-engine --out ~/il-data/oct --seeds 64`
+Everything is in this repo; the engine is clapha-engine (crx/), and every engine and data version is in its release
+`conversion-2026-10-24` (engines-*.tar.zst, data-*.tar.zst: unpack to ENGINES/ and DATA/).
 
-Also left out: battles before July 2026 (no data of their time) and the Tombstone hero on 3-4 September 2026 (a bug made it
-free).
+1. `python tools/hf_ingest.py OUT --parts 0-773 --token-file ~/.hf_token` -- downloads each part from the private Hugging
+   Face dataset (checked against its SHA256SUMS), keeps Ranked, Ladder and Grand Challenge from July 2026 on, and writes
+   `OUT/payloads/` (converter input) and `OUT/ingest/` (every battle, kept or left out and why). Needs pyarrow.
+2. `python tools/assign_by_date.py OUT/assignment.jsonl OUT/payloads` -- each battle's data version by its time, `alt` on
+   an update's first day.
+3. `python convert.py --assignment OUT/assignment.jsonl --replays OUT/payloads --clapha-engine ~/clapha-engine --out ~/il-data/v1
+   --seeds 64 --engine d22jul ENGINES/150535029 DATA/d22jul --engine jul6 ENGINES/150535029 DATA/jul6
+   --engine d86 ENGINES/150535029 DATA/d86 --engine aug26 ENGINES/150535029 DATA/aug26 --engine d2a ENGINES/160402002 DATA/d2a
+   --engine d2b ENGINES/160402012 DATA/d2b --engine sep17 ENGINES/160402012 DATA/sep17 --engine oct1 ENGINES/160402012 DATA/oct1
+   --engine d19 ENGINES/160402020 DATA/d19 --engine d22 ENGINES/160402020 DATA/d22`
+   -- resumable; update-day battles it did not reproduce run again on their `alt` data; `manifest.json` is what train.py reads.
+4. `python tools/conversion_report.py ~/il-data/v1 OUT --ledger ledger.jsonl` -- every battle's status (exact, exact with a
+   seed, dice: needs the true seed, not reproduced, refused, left out) with the reason, and the exact rate by day (a drop
+   flags an update or mechanic not yet known).
+
+Checked 2026-10-24 on part 1 in the Linux container: ingest identical to clapha-engine's tested pipeline on 2,705 of 2,705
+battles; 16 converted, 15 exact + 1 dice (4 seeds in the test). `--seeds 64` finds 91% of what 256 finds at a quarter of the
+cost (docs/training/RNG.md in clapha-engine).
 
 ## Finding why a battle misses
 
@@ -68,5 +81,5 @@ free).
 5. Build candidate data from the real later file (never an invented value) and date it by the battles that need it.
 6. Run every fix on all battles with that card: it must fix misses and break none.
 
-Open: the dice seed (perhaps computable from public battle fields), a play's landing tick after a bad network (RoyaleAPI
+Open: the dice seed (the server picks it; clapha-engine docs/training/RNG.md), a play's landing tick after a bad network (RoyaleAPI
 shows only the tap), 8 misses in 6-18 October without a confirmed cause.
