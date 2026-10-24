@@ -999,7 +999,7 @@ def main():
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--workers', type=int, default=23)
     parser.add_argument('--limit', type=int, default=0, help='convert only the first N assigned games')
-    parser.add_argument('--seeds', type=int, default=64, help="seeds tried for a battle that depends on the seed (dice); "
+    parser.add_argument('--seeds', type=int, default=1024, help="seeds tried for a battle that depends on the seed (dice); "
                         "the search stops early when 5 seeds give the same result")
     convert(parser.parse_args())
 

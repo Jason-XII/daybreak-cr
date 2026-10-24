@@ -67,7 +67,7 @@ Everything is in this repo; the engine is clapha-engine (crx/), and every engine
    flags an update or mechanic not yet known).
 
 Checked 2026-10-24 on part 1 in the Linux container: ingest identical to clapha-engine's tested pipeline on 2,705 of 2,705
-battles; 16 converted, 15 exact + 1 dice (4 seeds in the test). `--seeds 64` finds 91% of what 256 finds at a quarter of the
+battles; 16 converted, 15 exact + 1 dice (4 seeds in the test). `--seeds 1024` finds 91% of what 256 finds at a quarter of the
 cost (docs/training/RNG.md in clapha-engine).
 
 ## Finding why a battle misses
