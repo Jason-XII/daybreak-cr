@@ -67,8 +67,10 @@ Everything is in this repo; the engine is clapha-engine (crx/), and every engine
    flags an update or mechanic not yet known).
 
 Checked 2026-10-24 on part 1 in the Linux container: ingest identical to clapha-engine's tested pipeline on 2,705 of 2,705
-battles; 16 converted, 15 exact + 1 dice (4 seeds in the test). `--seeds 1024` finds 91% of what 256 finds at a quarter of the
-cost (docs/training/RNG.md in clapha-engine).
+battles; 16 converted, 15 exact + 1 dice (4 seeds in the test). `--seeds 1024` is the default: the goal is the most exact battles,
+not speed (64 finds 91% of what 256 finds at a quarter of the cost, if time ever matters). A battle exact only with a searched seed
+is reported apart (`exact with a seed`): its end state is the recorded one, but the seed is not the battle's true one, so its dice
+may fall differently mid-battle.
 
 ## Finding why a battle misses
 
