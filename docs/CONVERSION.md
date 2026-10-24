@@ -3,7 +3,8 @@
 A converted battle is only usable when the engine rebuilds it as it was played: every tower ends at the HP RoyaleAPI
 recorded. These rules took the 2,000-battle sample of the 700k dump from 54% (convert.py before them, October) to **95.6%
 exact** in the 6-18 October window (1,076 of 1,126 on the native engine, 73 of them with a found seed), and 1-5 October
-to 162 of 165 non-dice battles. Each rule was measured on real battles and made its battles exact without breaking any
+to 162 of 165 non-dice battles. On the first 20 parts of the 770k (2026-10-25): **15,222 of 15,800 converted battles exact (96.3%)**
+(below). Each rule was measured on real battles and made its battles exact without breaking any
 exact one. The full record (every measurement, the engine side) is clapha-engine `docs/training/CONVERSION_RULES.md`.
 
 Needs clapha-engine at ba78ae1 or later (`CrxEnv.selection_of(elixir_less=)`, `queue_card_at(selection=)`,
@@ -57,7 +58,7 @@ Everything is in this repo; the engine is clapha-engine (crx/), and every engine
 2. `python tools/assign_by_date.py OUT/assignment.jsonl OUT/payloads` -- each battle's data version by its time, `alt` on
    an update's first day.
 3. `python convert.py --assignment OUT/assignment.jsonl --replays OUT/payloads --clapha-engine ~/clapha-engine --out ~/il-data/v1
-   --seeds 64 --engine d22jul ENGINES/150535029 DATA/d22jul --engine jul6 ENGINES/150535029 DATA/jul6
+   --engine d22jul ENGINES/150535029 DATA/d22jul --engine jul6 ENGINES/150535029 DATA/jul6
    --engine d86 ENGINES/150535029 DATA/d86 --engine aug26 ENGINES/150535029 DATA/aug26 --engine d2a ENGINES/160402002 DATA/d2a
    --engine d2b ENGINES/160402012 DATA/d2b --engine sep17 ENGINES/160402012 DATA/sep17 --engine oct1 ENGINES/160402012 DATA/oct1
    --engine d19 ENGINES/160402020 DATA/d19 --engine d22 ENGINES/160402020 DATA/d22`
@@ -71,6 +72,31 @@ battles; 16 converted, 15 exact + 1 dice (4 seeds in the test). `--seeds 1024` i
 not speed (64 finds 91% of what 256 finds at a quarter of the cost, if time ever matters). A battle exact only with a searched seed
 is reported apart (`exact with a seed`): its end state is the recorded one, but the seed is not the battle's true one, so its dice
 may fall differently mid-battle.
+
+## Result on the first 20 parts (2026-10-25)
+
+Parts 0-19 (20,000 battles) through clapha-engine's pipeline (`crx/pipeline/run.py`: the same ingest -- identical to
+`tools/hf_ingest.py` on 2,705 of 2,705 battles -- and the same rules as convert.py), native Windows engine, 12 workers,
+seed cap 64:
+
+| status | battles |
+|---|---|
+| exact | 14,263 |
+| exact with a seed | 959 |
+| dice: needs the true seed | 378 |
+| not reproduced | 200 |
+| pending (July - early September engines not on that PC) | 403 |
+| left out by design (before July 2026, friendlies, tournaments, clan-mate, Classic Challenge, River Race, Showdown) | 3,797 |
+
+**15,222 of 15,800 converted exact (96.3%)**; by data version d19 96.6%, d22 97.2%, oct1 94.6%, sep17 94.8%; every day from
+7 Oct 94-98%. Report, a ledger row per battle with the **recipe** of every exact one (data version, King choice, press
+choices, seed: what replays it with no search) and the raw results: clapha-engine
+`docs/training/evidence/2026-10-25-pc-20-parts/` (private; you have access). convert.py's own results match the pipeline's on
+the battles compared so far (the PR #14 check and part 1); a larger side-by-side check is open.
+
+Running it: a run that is stopped resumes where it was (every battle written is skipped). Start it where closing a terminal
+cannot end it (`nohup` / `tmux`; on Windows a closed console window ends every process in it). Near the end of each data
+version the slowest battles (dice, up to `--seeds` runs each) are left; the workers share one queue, so all stay busy.
 
 ## Finding why a battle misses
 
