@@ -847,7 +847,10 @@ def worker(index, engine, jobs, out, clapha_engine, seeds=0):
     vocab, legal = C.Vocab.load(), C.cached_legal()
     index_file = open(out / f'index-{name}-{index}.jsonl', 'a')
     tables = {}
-    for job in jobs:
+    while True:
+        job = jobs.get()
+        if job is None:
+            break
         payload = payload_of(job, tables)
         if job.get('towers'):
             # a collected battle the oracle accepted with one tower-troop pair only (it did not keep them)
@@ -913,14 +916,18 @@ def convert(args):
 
     ctx = mp.get_context('fork')
 
-    def run(jobs):
-        running, crashes = {}, Counter()
+    def run(jobs, last_round=False):
+        """Workers of each engine take games from one queue (all busy to the end; a fixed share each left the last
+        workers alone on the slowest games). A worker whose native engine crashes is restarted; its game is retried
+        in a second round, and recorded as crashed when it crashes again."""
+        running, queues, retry = {}, {}, []
+        by_tag = {r['tag']: r for r in jobs}
 
-        def start(name, index, share):
+        def start(name, index):
             (out / f'current-{name}-{index}.txt').unlink(missing_ok=True)
-            process = ctx.Process(target=worker, args=(index, engines[name], share, out, args.clapha_engine, args.seeds))
+            process = ctx.Process(target=worker, args=(index, engines[name], queues[name], out, args.clapha_engine, args.seeds))
             process.start()
-            running[name, index] = (process, share)
+            running[name, index] = process
 
         # one CPU budget over the engine builds, in proportion to their games
         by_engine = {name: sorted((r for r in jobs if r['engine'] == name), key=lambda r: (r['part'], r['row']))
@@ -928,12 +935,17 @@ def convert(args):
         by_engine = {k: v for k, v in by_engine.items() if v}
         for name, mine in by_engine.items():
             count = max(1, min(len(mine), args.workers * len(mine) // len(jobs)))
+            queues[name] = ctx.Queue()
+            for r in mine:
+                queues[name].put(r)
+            for _ in range(count):
+                queues[name].put(None)                  # one stop per worker (a restarted one takes the dead one's)
             for index in range(count):
-                start(name, index, mine[index::count])
+                start(name, index)
         try:
             while running:
                 time.sleep(1)
-                for (name, index), (process, share) in list(running.items()):
+                for (name, index), process in list(running.items()):
                     if process.is_alive():
                         continue
                     del running[name, index]
@@ -942,21 +954,21 @@ def convert(args):
                     marker = out / f'current-{name}-{index}.txt'
                     if not marker.exists():
                         raise RuntimeError(f'{name} worker {index} failed before its first game; see its log')
-                    tag = marker.read_text().strip()
-                    crashes[tag] += 1
-                    if crashes[tag] >= 2:  # the native engine crashes on this replay: record it, do not drop it silently
-                        job = next(r for r in share if r['tag'] == tag)
-                        write_archive(archive_path(out, tag), None, None, None,
-                                      dict(tag=tag, part=job['part'], row=job['row'], engine=name, kept=False,
+                    job = by_tag[marker.read_text().strip()]
+                    if last_round:  # the native engine crashes on this replay: record it, do not drop it silently
+                        write_archive(archive_path(out, job['tag']), None, None, None,
+                                      dict(tag=job['tag'], part=job['part'], row=job['row'], engine=name, kept=False,
                                            why='native engine crashed twice'))
-                    rest = [r for r in share if r['tag'] != tag or crashes[tag] < 2]
-                    rest = [r for r in rest if not archive_path(out, r['tag']).exists() or r.get('retry')]
-                    if rest:
-                        start(name, index, rest)
+                    else:
+                        retry.append(job)
+                    start(name, index)
         finally:
-            for process, _ in running.values():
+            for process in running.values():
                 process.terminate()
                 process.join()
+        if retry and not last_round:
+            print(f'{len(retry)} games crashed the engine once; again', flush=True)
+            run(retry, last_round=True)
 
     if jobs:
         run(jobs)
