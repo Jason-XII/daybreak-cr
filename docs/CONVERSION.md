@@ -36,12 +36,12 @@ publish. `--seeds N` tries up to N seeds per battle that misses (stops after 5 s
 |---|---|---|
 | 10-19 ~09:40 | d22: 16.402.22 (real) | 160402020 |
 | 10-06 ~06:30 | d19: 16.402.19 (real) | 160402020 |
-| 28 Sep - 1 Oct | oct1: rebuilt -- Hero Ice Wizard rework + three `V16_*_BUG` flags (in no official post) + the Electro Wizard hero (5 Oct; its two files must be listed in `data_manifest.toml`) | 160402012 |
+| 28 Sep - 1 Oct | oct1b: rebuilt -- Hero Ice Wizard rework + three `V16_*_BUG` flags (in no official post) + the Electro Wizard hero (5 Oct; its two files must be listed in `data_manifest.toml`) + the Hero Ice Golem rework and the Electro Giant evolution (added 25 Oct: all 3,081 oct1 battles of the 20 parts rerun, 2,916 -> 2,958 exact, none lost) | 160402012 |
 | 09-17 | sep17: rebuilt, the 16 Sep post (4 changes) | 160402012 |
 | 09-07 ~05:30 | d2b: 16.402.2 from app 160402012 (8 Sep post) | 160402012 |
 | 09-01 | d2a: 16.402.2 from app 160402002 | 160402002 |
 
-The asset server serves only the current data (older versions 403), so sep17, oct1 (and jul6, aug26 for the summer) were
+The asset server serves only the current data (older versions 403), so sep17, oct1b (and jul6, aug26 for the summer) were
 rebuilt from real later files and accepted only when their battles turned exact. **Every engine and data version used,
 and a kit that replicates the result** (our converter at the versions used, the sample's 1,791 kept battles, replicate.py):
 the release `conversion-2026-10-24` of ClashAlpha/clapha-engine. For future
@@ -60,7 +60,7 @@ Everything is in this repo; the engine is clapha-engine (crx/), and every engine
 3. `python convert.py --assignment OUT/assignment.jsonl --replays OUT/payloads --clapha-engine ~/clapha-engine --out ~/il-data/v1
    --engine d22jul ENGINES/150535029 DATA/d22jul --engine jul6 ENGINES/150535029 DATA/jul6
    --engine d86 ENGINES/150535029 DATA/d86 --engine aug26 ENGINES/150535029 DATA/aug26 --engine d2a ENGINES/160402002 DATA/d2a
-   --engine d2b ENGINES/160402012 DATA/d2b --engine sep17 ENGINES/160402012 DATA/sep17 --engine oct1 ENGINES/160402012 DATA/oct1
+   --engine d2b ENGINES/160402012 DATA/d2b --engine sep17 ENGINES/160402012 DATA/sep17 --engine oct1b ENGINES/160402012 DATA/oct1b
    --engine d19 ENGINES/160402020 DATA/d19 --engine d22 ENGINES/160402020 DATA/d22`
    -- resumable; update-day battles it did not reproduce run again on their `alt` data; `manifest.json` is what train.py reads.
 4. `python tools/conversion_report.py ~/il-data/v1 OUT --ledger ledger.jsonl` -- every battle's status (exact, exact with a
@@ -88,7 +88,7 @@ seed cap 64:
 | pending (July - early September engines not on that PC) | 403 |
 | left out by design (before July 2026, friendlies, tournaments, clan-mate, Classic Challenge, River Race, Showdown) | 3,797 |
 
-**15,222 of 15,800 converted exact (96.3%)**; by data version d19 96.6%, d22 97.2%, oct1 94.6%, sep17 94.8%; every day from
+**15,222 of 15,800 converted exact (96.3%)**, **96.6% (15,264) with oct1b**; by data version d19 96.6%, d22 97.2%, oct1 94.6% (oct1b 96.0%), sep17 94.8%; every day from
 7 Oct 94-98%. Report, a ledger row per battle with the **recipe** of every exact one (data version, King choice, press
 choices, seed: what replays it with no search) and the raw results: clapha-engine
 `docs/training/evidence/2026-10-25-pc-20-parts/` (private; you have access). convert.py's own results match the pipeline's on
