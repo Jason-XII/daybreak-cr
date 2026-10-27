@@ -44,7 +44,7 @@ def balance_at(elixir, tick, events, until=None):
     return balance
 
 
-def payment_tick(elixir, tick, pending, cost, *, ability=False):
+def payment_tick(elixir, tick, pending, cost, *, ability=False, delay=C.DEPLOY_DELAY):
     """Predict a new tap's payment, or None if it would overspend.
 
     First find when the CLIENT can issue it (cards may be held for HOLD_TICKS;
@@ -54,6 +54,9 @@ def payment_tick(elixir, tick, pending, cost, *, ability=False):
     """
     if not math.isfinite(cost) or not 0 <= cost <= 10:
         raise ValueError('action cost must be finite and between 0 and 10')
+    delays = (delay,) if isinstance(delay, int) else tuple(sorted(set(delay)))
+    if not delays or any(d < 1 for d in delays):
+        raise ValueError('payment delay must be positive')
     events = [(max(tick + 1, p.due), p.cost) for p in pending]
     for wait in range(1 if ability else C.HOLD_TICKS + 1):
         available = balance_at(elixir, tick, events, tick + wait)
@@ -61,10 +64,11 @@ def payment_tick(elixir, tick, pending, cost, *, ability=False):
             return None
         if available + 1e-6 < cost:
             continue
-        due = tick + wait + C.DEPLOY_DELAY
+        due = tick + wait + min(delays)
         # This is the first time the client issues the tap. If its subsequent
         # payment conflicts, defer the TAP; it will not hold an affordable tap.
-        return due if balance_at(elixir, tick, events + [(due, cost)]) is not None else None
+        return due if all(balance_at(elixir, tick, events + [(tick + wait + d, cost)]) is not None
+                          for d in delays) else None
     return None
 
 

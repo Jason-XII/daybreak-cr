@@ -1,0 +1,16 @@
+{
+  "run": "gen-r6d",
+  "version": 2,
+  "games": 2052,
+  "actor_connections": 116,
+  "value_only": true,
+  "confirmed_abilities_first_two_batches": 3417,
+  "jobs": {
+    "learner": "117232",
+    "actors": "117239",
+    "actors-stu": "117240"
+  },
+  "old_run": "gen-r6c",
+  "old_run_stopped": true,
+  "old_checkpoints_preserved": true
+}

@@ -168,7 +168,7 @@ def evaluate(model, x, action, valid, labels=None, tau=0.05, margin=0.02):
     found = search_loss(model, out, x, labels, tau, margin) if labels is not None else (None, {})
     v = valid.reshape(-1)
     xv = {k: x[k][v] for k in ('own_flight_card', 'own_flight_float', 'hand_card', 'legal', 'hand_float', 'scalars',
-                               'live_playable') if k in x}
+                               'live_playable', 'live_abilities') if k in x}
     what, slot, cell, play = policy.split(action.reshape(-1)[v])
     overlap = getattr(model, 'overlap', False)  # "overlap": the engine's mask (live_playable) rode along in the inputs
     what_lp = policy.what_logp(out['what'][v], xv, policy.ABILITY_EXPLORE, out['which'][v], overlap)
@@ -388,6 +388,17 @@ def update(model, reference, optimizer, batches, args, device, objective=None):
         loss.backward()
         finite_step(model.parameters(), optimizer, 0.5, stats, 'skipped')
         with torch.no_grad():
+            ability_ready = torch.isfinite(new['what'][:, policy.ABILITY1:]).any(-1)
+            if ability_ready.any():
+                effective = new['what'][ability_ready, policy.ABILITY1:].exp().sum(-1)
+                raw = ((effective - policy.ABILITY_EXPLORE) / (1 - policy.ABILITY_EXPLORE)).clamp(min=0)
+                what, *_ = policy.split(y['action'][valid])
+                pressed = what >= policy.ABILITY1
+                stats['ability_raw_probability'].append(raw.mean().item())
+                stats['ability_effective_probability'].append(effective.mean().item())
+                stats['ability_sample_rate'].append(pressed[ability_ready].float().mean().item())
+                if pressed.any():
+                    stats['ability_advantage'].append(adv[pressed].mean().item())
             stats['policy_loss'].append(policy_loss.item())
             stats['entropy'].append(ent.item())
             stats['kl_ref'].append(kl_ref.item())
@@ -698,6 +709,11 @@ def learn(args, settings):
                           for k in ('features', 'wait', 'engine', 'search')},
                 searches_per_game=round(sum(t.get('searches', 0) for t in times) / max(1, sum(t.get('games', 0) for t in times)), 2),
                 refused_per_game=round(sum(t.get('refused', 0) for t in times) / max(1, sum(t.get('games', 0) for t in times)), 2),
+                ability={k: int(sum(t.get('ability_' + k, 0) for t in times))
+                         for k in ('ready', 'eligible', 'sampled', 'accepted', 'scheduled', 'confirmed',
+                                   'rejected', 'failed', 'unconfirmed', 'pending_at_end')},
+                expired_cards_per_game=round(sum(t.get('expired_cards', 0) for t in times)
+                                             / max(1, sum(t.get('games', 0) for t in times)), 3),
                 score={n: round(float(np.mean(results[n])), 3) for n in sorted(results) if results[n]},
                 ticks=float(np.mean([row['tick'] for row in finished] or [0])),
                 **(dict(deck_score=float(np.mean([row['deck_score'] for row in finished if 'deck' in row] or [0])),

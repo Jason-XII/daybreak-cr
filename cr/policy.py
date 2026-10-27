@@ -344,6 +344,9 @@ def what_logp(what, x, explore=0.0, which=None, overlap=False):
     arena.Engine.overlap allows another card), and P(ability) >= explore while one is ready.
     With `which` (the card head's logits): a play of a card the client would refuse (not playable()) becomes a wait, as it
     does live, instead of moving to the cards it can pay for; p(play, card) of every playable card is unchanged."""
+    if 'live_abilities' in x:
+        allowed = x['live_abilities'].bool()
+        what = what.masked_fill(torch.cat([torch.zeros_like(allowed), ~allowed], -1), float('-inf'))
     busy = (x['own_flight_card'] > 0).unsqueeze(-1) & (torch.arange(4, device=what.device) >= (ABILITY1 if overlap else PLAY))
     logp = _log_softmax(what.float().masked_fill(busy, float('-inf')))
     if which is not None and 'scalars' in x:

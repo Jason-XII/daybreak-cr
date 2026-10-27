@@ -1,6 +1,8 @@
 """The native simulator (clapha-engine, Linux) as the models play it: Engine (plays land as live, held and refused as
 the client does), each player's inputs (Inputs), matches from the deck pool, one game (Game), and the rewards' parts."""
 import ctypes
+from collections import defaultdict
+import json
 from dataclasses import dataclass
 from pathlib import Path
 import random
@@ -12,12 +14,14 @@ from types import SimpleNamespace
 import numpy as np
 
 from cr import observation as C
+from cr.live_budget import payment_tick
 
 # decision -> landing ticks, one drawn per play: as live (136 v350/v400 games, taps it could pay for, 2026-10-18:
 # 21 16%, 22 58%, 23 16%, 24 5%, 25-26 5%); was uniform 23-27, as replays are labelled, 1-3 ticks late
 PLAY_DELAY = (21,) * 16 + (22,) * 58 + (23,) * 16 + (24,) * 5 + (25,) * 3 + (26,) * 2
 # the engine is asked the cost of variable-cost cards (Mirror, ...) and cards outside the original table
 FIXED_COSTS = {k: v for k, v in C.COSTS.items() if k not in (28000006, 28000025, 26000107)}
+PAYMENT_DELAYS = tuple(sorted(set(PLAY_DELAY)))
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,8 @@ class Ability:
     charges: int  # left; -1 unlimited
     max_charges: int
     units: tuple[int, ...]  # native object ids of the units carrying it
+    cost: float | None = None  # elixir; metadata only, never a new policy feature
+    name: str = ''
 
     @property
     def ready(self):
@@ -173,6 +179,14 @@ class Engine:
         # per owner (22 Oct): may tap another card while one is in flight, as humans do (5.7% of their plays come
         # <= 20 ticks after the previous one); its cost is reserved from the elixir the pending plays haven't paid yet
         self.overlap = [False, False]
+        costs = json.loads((C.ASSETS / 'ability_costs.json').read_text())
+        if str(costs['build']) != str(self.env.B.build):
+            raise ValueError(f"ability costs target build {costs['build']}, engine is {self.env.B.build}")
+        if assets and Path(assets).name != costs['data']:
+            raise ValueError(f"ability costs target data {costs['data']}, engine assets are {assets}")
+        self.ability_costs = costs['abilities']
+        self.ability_stats = [defaultdict(int), defaultdict(int)]
+        self.ability_receipts = []
 
     def reset(self, seed=1, match=None):
         if match is None:
@@ -180,6 +194,9 @@ class Engine:
         self.env.create_match(match)
         self.generation += 1
         self.hands, self.pending, self.played = None, [], []
+        self.expired = 0
+        self.ability_stats = [defaultdict(int), defaultdict(int)]
+        self.ability_receipts = []
         r = self.env.reader
         logic = r.logic(self.env.battle)  # a deck never changes within a battle: read its card ids once
         self.deck = [[r.card_id(r.card_data(slot)) for slot in r.deck_slots(logic, owner)] for owner in (0, 1)]
@@ -202,19 +219,23 @@ class Engine:
             lag = max(delay if isinstance(delay, int) else random.choice(delay), 1)
             due = before.tick + lag
             if a.slot == ABILITY:  # a tap on the ability button: lands like a card, if a carrier is still ready then
-                # a press waits only for this player's presses: the live client takes a card tap while a press is on
-                # its way (22 Oct: blocking it refused ~0.4 card taps a game the model could not see)
-                free = not any(p['owner'] == a.owner and p['slot'] == ABILITY for p in self.pending)
-                ok = free and any(x.ready for x in before.players[a.owner].abilities)
+                # As the sampler/live player: no press behind a pending card or
+                # press. A funded card may still follow a pending press.
+                self.ability_stats[a.owner]['attempted'] += 1
+                ok = self.ability_playable(a.owner, a.x, delay=lag)
                 if ok:
-                    self.pending.append(dict(due=due, held=False, owner=a.owner, slot=ABILITY, card=None, cost=0,
-                                             controller=a.x))
+                    ability = before.players[a.owner].abilities[a.x]
+                    self.pending.append(dict(due=due, tap=before.tick, held=False, owner=a.owner, slot=ABILITY,
+                                             card=None, cost=ability.cost, controller=a.x))
+                    self.ability_stats[a.owner]['accepted'] += 1
+                else:
+                    self.ability_stats[a.owner]['rejected'] += 1
                 executed.append(ok)
                 continue
-            me = before.players[a.owner]
-            card, reserved, ok = self._card_tap(a.owner, a.slot, before)
+            card, _, ok = self._card_tap(a.owner, a.slot, before, delay=lag)
             if ok:
-                self.pending.append(dict(due=due, tap=before.tick, delay=lag, held=card.cost * 10000 > me.elixir - reserved,
+                due = self._payment(a.owner, card.cost, delay=lag)
+                self.pending.append(dict(due=due, tap=before.tick, delay=lag, held=due > before.tick + lag,
                                          hold_until=before.tick + C.HOLD_TICKS, owner=a.owner, slot=a.slot,
                                          card=card.card, cost=card.cost, x=a.x, y=a.y))
             executed.append(ok)
@@ -230,19 +251,33 @@ class Engine:
                         self.expired += 1
         after = self._capture()
         self.state = after
+        self._confirm_abilities(after)
         return Transition(after, after.tick - before.tick, tuple(executed))
 
-    def _card_tap(self, owner, slot, state):
-        """step()'s rule for a card tap on hand slot `slot` -> (the card or None, the elixir the pending cards reserve,
+    def _payment(self, owner, cost, *, ability=False, delay=PAYMENT_DELAYS):
+        pending = [SimpleNamespace(due=p['due'], cost=p['cost']) for p in self.pending if p['owner'] == owner]
+        return payment_tick(self.state.players[owner].elixir / 10000, self.state.tick, pending, cost,
+                            ability=ability, delay=delay)
+
+    def ability_playable(self, owner, controller, *, delay=PAYMENT_DELAYS):
+        abilities = self.state.players[owner].abilities
+        if not 0 <= controller < len(abilities) or any(p['owner'] == owner for p in self.pending):
+            return False  # card -> ability block and no duplicate pending press, as live
+        ability = abilities[controller]
+        return (ability.ready and ability.cost is not None
+                and self._payment(owner, ability.cost, ability=True, delay=delay) is not None)
+
+    def _card_tap(self, owner, slot, state, *, delay=PAYMENT_DELAYS):
+        """step()'s rule for a card tap on hand slot `slot` -> (the card or None, the elixir all pending actions reserve,
         accepted?): free with none of the player's cards in flight, or with overlap fewer than CARDS_IN_FLIGHT, none on
         this slot or still held for elixir; then the cost paid within the client's hold once their costs are reserved."""
         mine = [p for p in self.pending if p['owner'] == owner and p['slot'] != ABILITY]
         free = not mine or (self.overlap[owner] and len(mine) < CARDS_IN_FLIGHT and
                             all(p['slot'] != slot and not p['held'] for p in mine))
-        reserved = sum(p['cost'] for p in mine) * 10000
+        reserved = sum(p['cost'] for p in self.pending if p['owner'] == owner) * 10000
         me = state.players[owner]
         card = next((h for h in me.hand if h.slot == slot), None)
-        return card, reserved, card is not None and free and card.cost * 10000 <= me.elixir - reserved + C.hold_slack(state.tick)
+        return card, reserved, card is not None and free and self._payment(owner, card.cost, delay=delay) is not None
 
     def playable(self, owner):
         """[4] bool: the hand slots step() would take a card tap on now. Game.views() gives it to an overlapping player
@@ -292,7 +327,13 @@ class Engine:
                 continue
             self.pending.remove(p)
             if p['slot'] == ABILITY:
-                self._activate(p['owner'], p['controller'])
+                before = self.state.players[p['owner']].abilities[p['controller']]
+                if self._activate(p['owner'], p['controller']):
+                    self.ability_stats[p['owner']]['scheduled'] += 1
+                    self.ability_receipts.append(dict(owner=p['owner'], controller=p['controller'], before=before,
+                                                      expires=now + 1 + C.HOLD_TICKS + 10))
+                else:
+                    self.ability_stats[p['owner']]['failed'] += 1
                 continue
             hand, _, elixir = players[p['owner']]
             if hand.get(p['slot'], (None, None))[1] == p['card'] and elixir >= p['cost'] * 10000:
@@ -302,6 +343,23 @@ class Engine:
             else:
                 self.expired += 1
         return released
+
+    def _confirm_abilities(self, state):
+        waiting = []
+        for receipt in self.ability_receipts:
+            owner, controller, before = receipt['owner'], receipt['controller'], receipt['before']
+            abilities = state.players[owner].abilities
+            current = abilities[controller] if controller < len(abilities) else None
+            confirmed = current is not None and current.name == before.name and (
+                (before.charges >= 0 and 0 <= current.charges < before.charges)
+                or current.cooldown_ms > before.cooldown_ms or current.button == 10)
+            if confirmed:
+                self.ability_stats[owner]['confirmed'] += 1
+            elif state.tick > receipt['expires']:
+                self.ability_stats[owner]['unconfirmed'] += 1
+            else:
+                waiting.append(receipt)
+        self.ability_receipts = waiting
 
     def _activate(self, owner, controller):
         """Activate `owner`'s hero / champion ability of `controller` (0 or 1, the model's ABILITY1 / ABILITY2), if
@@ -321,10 +379,21 @@ class Engine:
         """Hero / champion controllers (every capture) and evolution progress (cached until a card is played)."""
         r = self.env.reader
         player = r.player(r.logic(self.env.battle), owner)
-        abilities = tuple(Ability(a['buttonState'], a['remainingCooldownMs'], a['configuredCooldownMs'],
-                                  a['remainingChargesRaw'], a['maxCharges'] or 0, tuple(a['championObjectIds']))
-                          for a in r.abilities(player))
-        return abilities
+        rows = {a['controllerSlot'] - 1: a for a in r.abilities(player)}
+        abilities = []
+        for controller in range(2):
+            a = rows.get(controller)
+            if a is None:
+                abilities.append(Ability(0, 0, 0, -1, 0, ()))
+                continue
+            name = a['actionDataName']
+            ability = Ability(a['buttonState'], a['remainingCooldownMs'], a['configuredCooldownMs'],
+                              a['remainingChargesRaw'], a['maxCharges'] or 0, tuple(a['championObjectIds']),
+                              self.ability_costs.get(name), name)
+            if ability.ready and ability.cost is None:
+                raise ValueError(f'unknown ability cost for {name!r} on engine build {self.env.B.build}')
+            abilities.append(ability)
+        return tuple(abilities)
 
     def _evolution(self):
         return [tuple(Evolution(e['deckSlot'], e['cardId'], e['evolvable'], e['cycleRequired'] or 0,
@@ -474,6 +543,7 @@ class Game:
     def views(self):
         views = self.inputs(self.state)
         for owner, x in views.items():
+            x['live_abilities'] = np.array([self.engine.ability_playable(owner, i) for i in range(2)])
             if self.engine.overlap[owner]:  # its sampler takes exactly the card taps the engine accepts
                 x['live_playable'] = self.engine.playable(owner)
         return views

@@ -1,16 +1,18 @@
 """The simulator wrapper's play rules (no native engine: plays are only accepted or refused here)."""
 from types import SimpleNamespace
+from collections import defaultdict
 
 from cr import engine, policy
 
 
 def test_a_pending_ability_press_blocks_only_another_press():
     hand = tuple(engine.HandCard(i, 26000000 + i, 3, 0, 26000000 + i) for i in range(4))
-    ready = engine.Ability(2, 0, 0, 1, 1, (5000010,))
+    ready = engine.Ability(2, 0, 0, 1, 1, (5000010,), cost=1)
     state = engine.State(1, 500, False, None, (0, 0), (engine.Player(0, 100000, hand, (), (ready,)),
                                                       engine.Player(1, 100000, hand, ())), (), (), 1)
     sim = engine.Engine.__new__(engine.Engine)  # no native engine: plays are only accepted or refused here
     sim.state, sim.pending, sim.overlap = state, [], [False, False]
+    sim.ability_stats, sim.ability_receipts = [defaultdict(int), defaultdict(int)], []
     sim._release, sim._capture, sim.env = (lambda: []), (lambda: state), SimpleNamespace(step=lambda n: None)
     press, card, other = engine.Play(0, engine.ABILITY, 0, 0), engine.Play(0, 1, 9500, 5500), engine.Play(0, 2, 9500, 5500)
     assert sim.step([press], 5, delay=22).executed == (True,)
@@ -41,6 +43,7 @@ def test_overlap_takes_two_cards_in_flight_and_the_sampler_mask_is_the_engines_r
                                                       engine.Player(1, 100000, hand, ())), (), (), 1)
     sim = engine.Engine.__new__(engine.Engine)
     sim.state, sim.pending, sim.overlap = state, [], [True, False]
+    sim.ability_stats, sim.ability_receipts = [defaultdict(int), defaultdict(int)], []
     sim._release, sim._capture, sim.env = (lambda: []), (lambda: state), SimpleNamespace(step=lambda n: None)
     tap = lambda owner, slot: engine.Play(owner, slot, 9500, 5500)  # noqa: E731
     assert sim.playable(0).tolist() == [True] * 4

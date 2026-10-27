@@ -92,6 +92,8 @@ def test_with_overlap_the_learner_scores_what_the_actor_sampled_under_the_engine
     T, rng = len(x['scalars']), np.random.default_rng(0)
     x['own_flight_card'] = np.where(np.arange(T) % 3 == 0, 1, 0).astype(np.int64)  # a card in flight every third
     x['live_playable'] = rng.random((T, 4)) < 0.6
+    x['ability'][:, :, 1] = 1
+    x['live_abilities'] = rng.random((T, 2)) < 0.5
     torch.manual_seed(0)
     model = policy.Policy(policy.Config(vocab_size=len(C.Vocab([26000000])), card_dim=4, object_dim=4, core=8,
                                         attention_layers=0, conv_channels=4, conv_layers=1))
@@ -103,6 +105,8 @@ def test_with_overlap_the_learner_scores_what_the_actor_sampled_under_the_engine
         again = ppo.evaluate(model, packed, action[None], torch.ones(1, T, dtype=torch.bool))
     assert torch.allclose(again['logp'], logp, atol=1e-4)
     what, slot, _, play = policy.split(action)
+    assert all(bool(x['live_abilities'][t, what[t] - policy.ABILITY1])
+               for t in range(T) if what[t] >= policy.ABILITY1), 'no unavailable or duplicate ability press'
     assert all(bool(x['live_playable'][t, slot[t]]) for t in range(T) if play[t]), 'only cards the engine takes'
     flying = torch.from_numpy((x['own_flight_card'] > 0) & x['live_playable'].any(1))
     assert flying.any() and torch.isfinite(again['what'][flying, policy.PLAY]).all(), 'it may play with a card in flight'

@@ -160,6 +160,9 @@ def collector(index, run, addresses, key, affinity=False):
             for o, (a, lp, v, top) in enumerate(replies):
                 if o in seats:
                     seat = seats[o]
+                    timing['ability_ready'] += any(ability.ready for ability in state.players[o].abilities)
+                    timing['ability_eligible'] += any(engine.ability_playable(o, i) for i in range(2))
+                    timing['ability_sampled'] += a in (policy.ABILITY1, policy.ABILITY2)
                     if searching and a >= policy.CARD:  # the tiles the policy weighs for its card, each played out
                         t3 = time.perf_counter()
                         slot, cells = (a - policy.CARD) // policy.CELLS, list(dict.fromkeys([(a - policy.CARD) % policy.CELLS] + top))
@@ -200,6 +203,11 @@ def collector(index, run, addresses, key, affinity=False):
                                          dict(timing, games=1))
             timing = defaultdict(float)
             continue
+        for o in seats:
+            for metric_name, metric_value in engine.ability_stats[o].items():
+                timing['ability_' + metric_name] += metric_value
+            timing['ability_pending_at_end'] += sum(r['owner'] == o for r in engine.ability_receipts)
+        timing['expired_cards'] += engine.expired
         out = []
         for o, seat in seats.items():
             outcome = 0.0 if state.result not in (0, 1) else 1.0 if state.result == o else -1.0
