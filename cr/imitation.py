@@ -30,9 +30,9 @@ def loss_and_metrics(model, xs, ts, value_coef, next_coef):
     target_which = ts['which'].reshape(-1)[play]
     which_ok = ts['which_ok'].reshape(-1)[play]
     loss_which = F.cross_entropy(which[which_ok], target_which[which_ok]) if which_ok.any() else zero
-    flat = {k: v.reshape(-1, *v.shape[2:]) for k, v in xs.items() if k in ('hand_card', 'legal')}
+    flat = {k: v.reshape(-1, *v.shape[2:]) for k, v in xs.items() if k in ('hand_card', 'legal', 'obj_side', 'obj_float')}
     if play.any():
-        tiles = model.tiles({'core': out['core'][play], 'grid': out['grid'][play]},
+        tiles = model.tiles({k: out[k][play] for k in ('core', 'grid', 'tokens')},
                             {k: v[play] for k, v in flat.items()}, target_which)
         target_tile = ts['tile'].reshape(-1)[play]
         loss_tile = F.cross_entropy(tiles, target_tile)
@@ -188,7 +188,7 @@ class Experts:
     """Human games for the PPO learner's imitation step: the winning player views (validation games left out) of a
     deck index (experiments/deck_index.py, outcomes listed) or of a whole dataset (its manifest.json: every deck; a
     view's outcome is checked when it is read). batch(n): n random winning views, one random chunk of CHUNK decisions
-    each, ability presses relabelled as train.py --ability_labels 1 does."""
+    each, ability presses relabelled as train.py --ability_labels 1 does (not in a dataset with presses at the tap)."""
     CHUNK = 128
 
     def __init__(self, index, seed):
@@ -196,6 +196,8 @@ class Experts:
         spec = json.loads(path.read_text())
         self.root, self.rng = Path(spec.get('data', path.parent)), random.Random(seed)
         self.entries = [e for e in spec['entries'] if e.get('outcome', 1) > 0 and not e['validation']]
+        # datasets converted since PR #14 label presses at the tap, on the button pressed: no shift (it would apply twice)
+        self.relabel = not spec.get('schema', {}).get('presses_at_tap')
         if not self.entries:
             raise ValueError(f'{index}: no winning player views')
 
@@ -207,7 +209,8 @@ class Experts:
             e = self.rng.choice(self.entries)
             data = read(self.root / e['file'], e['owner'])
             if data['t_value'][0] > 0:
-                items.append(self.rng.choice(list(chunks(ability_labels(data), self.CHUNK, False, self.rng))))
+                items.append(self.rng.choice(list(chunks(ability_labels(data) if self.relabel else data, self.CHUNK, False,
+                                                         self.rng))))
         if not items:
             raise ValueError(f'{self.root}: no winning player view in {100 * n} draws')
         return collate(items)

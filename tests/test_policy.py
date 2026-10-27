@@ -32,6 +32,36 @@ def test_training_runs_resumes_and_loads_for_play(tmp_path, monkeypatch):
     assert action[0] in ('wait', 'card', 'ability')
 
 
+
+def test_tile_tune_starts_as_the_base_head_trains_heads_side_by_side_and_resumes(tmp_path, monkeypatch):
+    import tile_tune
+    root = dataset(tmp_path / 'data', monkeypatch)
+    settings = dict(train.DEFAULTS, epochs=1, batch=2, chunk=3, workers=0, card_dim=4, object_dim=4, conv_channels=8,
+                    conv_layers=1, core=8, attention_layers=1, tile_blocks=1, device='cpu')
+    (tmp_path / 'base').mkdir()
+    train.train(root, tmp_path / 'base', settings)
+    out = tmp_path / 'tune'
+    out.mkdir()
+    tune = dict(tile_tune.DEFAULTS, base=str(tmp_path / 'base' / 'latest.pt'), variants='plain:0,interact:2', steps=4,
+                batch=2, chunk=3, workers=0, max_val=0, val_every=2, log_every=1, checkpoint_every=2, lr=1e-2,
+                device='cpu')
+    tile_tune.run(root, out, tune)
+    rows = [json.loads(line) for line in (out / 'metrics.jsonl').open()]
+    start = {r['variant']: r['tile'] for r in rows if r['split'] == 'val' and r['step'] == 0}
+    assert start['plain'] == pytest.approx(start['base']) and start['interact'] == pytest.approx(start['base'])
+    end = {r['variant']: r['tile'] for r in rows if r['split'] == 'val' and r['step'] == 4}
+    assert end['plain'] != pytest.approx(start['base']) and end['interact'] != pytest.approx(end['plain'])
+    model, _, saved = policy.load(out / 'interact.pt')
+    assert model.interact is not None and saved['step'] == 4
+    base, _, _ = policy.load(tmp_path / 'base' / 'latest.pt')
+    assert all(torch.equal(v, base.state_dict()[k]) for k, v in model.state_dict().items()
+               if k.split('.')[0] not in tile_tune.TRAINED), 'only the tile head learns'
+    x, _ = arrays(1, 0)
+    assert policy.Agent(model, 0).act({k: v[0] for k, v in x.items()})[0] in ('wait', 'card', 'ability')
+    tune['steps'] = 6
+    tile_tune.run(root, out, tune)
+    assert torch.load(out / 'state.pt', weights_only=False)['step'] == 6
+
 @pytest.mark.parametrize('option', [{}, dict(res_blocks=1), dict(flight_grid=1), dict(tile_blocks=2),
                                     dict(board=2, board_rows=4, board_cols=3), dict(res_blocks=1, tile_blocks=1, res_norm=0),
                                     dict(attention_layers=2, dist_bias=1), dict(card_stats=3)])

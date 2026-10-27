@@ -996,7 +996,8 @@ def convert(args):
             rejected.append(dict(tag=r['tag'], why=meta.get('why')))
     if missing:
         raise SystemExit(f'{len(missing)} games have no archive yet (first: {missing[:5]}); rerun to finish')
-    manifest = dict(schema=dict(vocab=sorted(C.Vocab.load().index), legal=True), entries=entries, rejected=rejected)
+    manifest = dict(schema=dict(vocab=sorted(C.Vocab.load().index), legal=True, presses_at_tap=True), entries=entries,
+                    rejected=rejected)
     (out / 'manifest.tmp').write_text(json.dumps(manifest))
     (out / 'manifest.tmp').replace(out / 'manifest.json')
     print(f'{len(entries) // 2} games kept, {len(rejected)} rejected -> {out / "manifest.json"}', flush=True)

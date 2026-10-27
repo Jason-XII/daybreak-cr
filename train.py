@@ -67,6 +67,8 @@ def train(data, out, settings):
         dist.init_process_group('nccl' if cuda else 'gloo', timeout=timedelta(minutes=15))
     manifest = json.loads((Path(data) / 'manifest.json').read_text())
     vocab = C.Vocab(manifest['schema']['vocab'])
+    if settings.get('ability_labels') and manifest['schema'].get('presses_at_tap'):
+        raise SystemExit('--ability_labels 1 shifts presses to the tap; this dataset has them there already (convert.py since PR #14)')
     train_entries = [e for e in manifest['entries'] if not e['validation']]
     val_entries = [e for e in manifest['entries'] if e['validation']]
     if settings.get('max_train'):  # ablations: the same random subset for every run with the same seed

@@ -53,8 +53,18 @@ def test_packed_inputs_and_ppo_update(tmp_path, monkeypatch, option):
     trajectories[-1]['reward'][-1] = trajectories[-1]['outcome'] = -1.0
     reference = copy.deepcopy(model).requires_grad_(False)
     critic = ppo.Critic(copy.deepcopy(model))
+    # search labels on the first game's card plays: the search ranks the tile played last of three candidates
+    plays = np.flatnonzero(trajectories[0]['action'] >= policy.CARD)[:3]
+    assert len(plays), 'the untrained policy played a card'
+    cells = []
+    for t in plays:
+        slot, cell = divmod(int(trajectories[0]['action'][t]) - policy.CARD, policy.CELLS)
+        legal = np.flatnonzero(np.unpackbits(trajectories[0]['inputs']['legal'][t])[:4 * policy.CELLS].reshape(4, -1)[slot])
+        cells.append([cell] + [int(c) for c in legal if c != cell][:2])
+    trajectories[0]['search'] = dict(t=plays, slot=(trajectories[0]['action'][plays] - policy.CARD) // policy.CELLS,
+                                     cells=np.array(cells), scores=np.tile(np.array([0.0, 0.5, 0.2], np.float32), (len(plays), 1)))
     args = argparse.Namespace(gamma=0.999, lam=0.95, minibatch=2, epochs=1, critic_epochs=2, clip=0.2, entropy=0.002,
-                              kl_coef=0.05)
+                              kl_coef=0.05, search_coef=0.5, search_tau=0.05, search_margin=0.02)
     device = torch.device('cpu')
     batches = ppo.minibatches(trajectories, args, device)
     stats = ppo.critic_targets(batches, critic, args, device)
@@ -66,6 +76,7 @@ def test_packed_inputs_and_ppo_update(tmp_path, monkeypatch, option):
     for _ in range(5):
         last = ppo.train_critic(critic, optimizer, batches, args, device)
     assert all(np.isfinite(v) for v in {**stats, **first, **last}.values())
+    assert stats['search_labels'] > 0 and np.isfinite(stats['search_loss']), 'the search labels were learned from'
     assert stats['kl_ref'] < 1e-3 and stats['approx_kl'] < 1e-3, 'the first update starts from the reference'
     assert last['win_loss'] < first['win_loss'], 'the critic learns who won'
     advantage, returns = ppo.advantages(np.array([1., 0., -1.], np.float32), np.zeros(3, np.float32), gamma=1., lam=1.)
@@ -114,8 +125,15 @@ def test_actor_learner_link_and_shaping(tmp_path):
     assert engine.potential(full, start, 0) == 0
     assert engine.potential(hit, start, 0) == pytest.approx(1 + 1 + engine.KING_WEIGHT * 0.5 - 0.5)
     assert engine.potential(hit, start, 1) == pytest.approx(-(1 + 1 + engine.KING_WEIGHT * 0.5 - 0.5))
-    assert engine.margin(hit, start, 0) == pytest.approx(0.5 - 0.0) and engine.margin(hit, start, 1) == pytest.approx(-0.5)
-    assert engine.margin(full, start, 0) == 0
+    assert engine.margin(hit, start, 0) == pytest.approx((0.5 - 0.5) / 3)  # ours half; theirs: a princess gone, king half
+    four = SimpleNamespace(crowns=(0, 0), entities=(tower(1, 0, 100), tower(4, 0, 100, 14500), tower(2, 1, 100),
+                                                    tower(5, 1, 100, 14500)))
+    one_one = SimpleNamespace(crowns=(1, 1), entities=(tower(4, 0, 80, 14500), tower(5, 1, 40, 14500)))
+    assert engine.margin(four, engine.tower_hp(four), 0) == 0
+    assert engine.margin(one_one, engine.tower_hp(four), 0) == pytest.approx((0.8 - 0.4) / 3), '1-1 is not flat'
+    one_two = SimpleNamespace(crowns=(1, 2), entities=(tower(4, 0, 80, 14500),))
+    assert engine.margin(one_two, engine.tower_hp(four), 0) == pytest.approx(0.8 / 3), '1-2: all towers count'
+    assert engine.margin(SimpleNamespace(crowns=(0, 3), entities=full.entities[1:]), start, 0) == pytest.approx(-2 / 3)
 
 
 def test_wire_rows_stage_like_padded_rows():
@@ -208,15 +226,17 @@ def test_decision_server_plays_only_legal_tiles_and_tile_scores_stay_fp32(tmp_pa
     entry = json.loads((root / 'manifest.json').read_text())['entries'][0]
     x, _ = next(imitation.chunks(imitation.read(root / entry['file'], entry['owner']), 300, True, None))
     rows = [policy.pack({k: v[t] for k, v in x.items()}) for t in range(len(x['scalars']))]
-    decider = actors.Decider({'current': model}, torch.device('cpu'), 8)
+    decider = actors.Decider({'current': model}, torch.device('cpu'), 8, top=3)
     decider.shape = actors.layout(rows[0])
     decider.reset(0)
     played = 0
     for t, row in enumerate(rows):
-        (a, lp, v), = decider.act([((0, 0), 'current', None, actors.wire(row, decider.shape))])
+        (a, lp, v, top), = decider.act([((0, 0), 'current', None, actors.wire(row, decider.shape))])
         if a >= policy.CARD:
             slot, cell = divmod(a - policy.CARD, policy.CELLS)
             assert x['legal'][t].reshape(4, -1)[slot][cell]
+            assert top and len(top) <= 3 and all(x['legal'][t].reshape(4, -1)[slot][c] for c in top), \
+                "the search's candidates: legal tiles of the card played"
             played += 1
     assert played, 'the untrained policy played at least one card'
     xt = policy.tensors({k: np.stack(rows_k)[None] for k, rows_k in ((k, [r[k] for r in rows]) for k in rows[0])}, 'cpu')
@@ -273,7 +293,7 @@ def test_frozen_models_play_without_the_press_floor_and_are_told_apart_by_checkp
     decider.shape = actors.layout(row)
     decider.reset(0)
     w = actors.wire(row, decider.shape)
-    (a0, lp0, _), (a1, lp1, _), (a2, _, _) = decider.act(
+    (a0, lp0, _, _), (a1, lp1, _, _), (a2, _, _, _) = decider.act(
         [((0, 0), 'current', None, w), ((0, 1), 'v000100', paths[0], w), ((1, 0), 'v000100', paths[1], w)])
     assert a0 == a1 == C.WAIT and abs(lp0 - math.log(1 - policy.ABILITY_EXPLORE)) < 1e-4, 'the learner explores'
     assert abs(lp1) < 1e-4, 'a frozen model plays as deployed: no press floor'
@@ -463,3 +483,32 @@ def test_the_imitation_step_learns_the_human_games(tmp_path, monkeypatch):
         last = ppo.imitation_step(model, optimizer, batch, 0.2, torch.device('cpu'))
     assert all(math.isfinite(v) for v in {**first, **last}.values()) and last['bc_loss'] < first['bc_loss']
     assert model.next_when.weight.grad is None, 'heads the step does not train keep no gradient'
+
+
+def test_the_search_loss_moves_the_tile_head_toward_the_searchs_best(tmp_path, monkeypatch):
+    root = dataset(tmp_path / 'data', monkeypatch)
+    torch.manual_seed(0)
+    model = policy.Policy(policy.Config(vocab_size=len(C.Vocab([26000000])), card_dim=4, object_dim=4, conv_channels=4,
+                                      conv_layers=1, core=8, attention_layers=0))
+    entry = json.loads((root / 'manifest.json').read_text())['entries'][0]
+    x, _ = next(imitation.chunks(imitation.read(root / entry['file'], entry['owner']), 300, True, None))
+    xt = {k: torch.from_numpy(v[None]) for k, v in x.items()}
+    T = len(x['scalars'])
+    labels = dict(rows=torch.arange(T), slot=torch.zeros(T, dtype=torch.long),
+                  cells=torch.tensor([[0, 1, 2, -1]]).repeat(T, 1),             # a padded candidate too
+                  scores=torch.tensor([[0.0, 0.3, 0.1, float('nan')]]).repeat(T, 1))
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    with torch.no_grad():
+        before = policy.tile_logp(model, *policy.flat(model(xt), xt), labels['slot'])[:, :3].exp().sum(1)
+    for _ in range(60):
+        out, flat = policy.flat(model(xt), xt)
+        loss, metrics = ppo.search_loss(model, out, flat, labels, 0.05, 0.02)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    assert metrics['search_agree'] == 1.0 and metrics['search_captured'] == pytest.approx(1.0)
+    out, flat = policy.flat(model(xt), xt)
+    logp = policy.tile_logp(model, out, flat, labels['slot'])
+    assert (logp[:, 1] > logp[:, 0]).all() and (logp[:, 1] > logp[:, 2]).all(), "the search's best tile leads"
+    assert (logp[:, :3].exp().sum(1) > before).all() and metrics['search_outside'] == 0, \
+        'probability moves onto the candidates, not off them to the rest of the board (gen-r6, 27 Oct)'

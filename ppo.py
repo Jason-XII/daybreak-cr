@@ -128,12 +128,44 @@ def _kl(logp, ref):
     return (logp.exp() * (logp.masked_fill(torch.isinf(logp), 0) - ref.masked_fill(torch.isinf(ref), 0))).sum(-1)
 
 
-def evaluate(model, x, action, valid):
+def search_loss(model, out, x, labels, tau, margin):
+    """The placement search's labels (rows of the flat batch, hand slot, candidate cells [n, K] (-1: none), their scores
+    [n, K]) -> (the loss: cross-entropy of softmax(score / tau) over the candidates against the tile head's whole-board
+    log-probs, a label weighted by its score spread, spreads under `margin` left out; metrics). Whole-board (27 Oct):
+    gen-r6's first try normalised over the candidates only (distill2.py's listwise loss), so nothing held the other
+    ~570 tiles: the head flattened (imitation tile loss 2.2 -> 3.6 in 30 updates) and the run lost to IL; on 22 Oct the
+    candidates-only loss had moved the head's top tile outside the candidates 42% of the time, the whole-board one 1%."""
+    logp = policy.tile_logp(model, out, x, labels['slot'], labels['rows'])
+    real = labels['cells'] >= 0
+    z = logp.gather(1, labels['cells'].clamp(min=0)).masked_fill(~real, float('-inf'))
+    score = labels['scores'].masked_fill(~real, float('-inf'))
+    spread = score.amax(1) - score.masked_fill(~real, float('inf')).amin(1)
+    use = spread > margin
+    if not use.any():
+        return None, {}
+    target = torch.softmax(score[use] / tau, 1)
+    ce = -(target * z[use].masked_fill(~real[use], 0)).sum(1)
+    w = spread[use] / spread[use].mean()
+    with torch.no_grad():
+        mine, best = z[use].argmax(1), score[use].argmax(1)
+        sc = score[use].nan_to_num(neginf=0.0)
+        own = sc[:, 0]  # the tile the policy sampled
+        top = logp[use].argmax(1)
+        metrics = dict(search_labels=float(use.sum()), search_agree=float((mine == best).float().mean()),
+                       search_outside=float((labels['cells'][use] != top[:, None]).all(1).float().mean()),
+                       search_captured=float((sc.gather(1, mine[:, None])[:, 0] - own).sum()
+                                             / (sc.gather(1, best[:, None])[:, 0] - own).sum().clamp(min=1e-9)))
+    return (ce * w).mean(), metrics
+
+
+def evaluate(model, x, action, valid, labels=None, tau=0.05, margin=0.02):
     """A forward pass on a padded batch -> per real decision ([n], in the mask's order): log p(action), the what and
     card heads' log-probs [n, 4], the log-prob of the tile taken and its head's entropy (0 where no card was played),
-    whether a card was played, and the value."""
+    whether a card was played, and the value; with `labels` (search_loss's) also 'search' (its loss, or None) and
+    'search_metrics'."""
     full = model(x)
     out, x = policy.flat(full, x)
+    found = search_loss(model, out, x, labels, tau, margin) if labels is not None else (None, {})
     v = valid.reshape(-1)
     xv = {k: x[k][v] for k in ('own_flight_card', 'own_flight_float', 'hand_card', 'legal', 'hand_float', 'scalars',
                                'live_playable') if k in x}
@@ -149,7 +181,7 @@ def evaluate(model, x, action, valid):
     pick = lambda lp, i: lp.gather(1, i.unsqueeze(1)).squeeze(1)  # noqa: E731
     logp = pick(what_lp, what) + torch.where(play, pick(which_lp, slot) + tile, torch.zeros_like(tile))
     return dict(logp=logp, what=what_lp, which=which_lp, tile=tile, tile_entropy=tile_entropy, play=play,
-                value=full['value'].reshape(-1)[v])
+                value=full['value'].reshape(-1)[v], search=found[0], search_metrics=found[1])
 
 
 class Evaluate(nn.Module):
@@ -159,8 +191,21 @@ class Evaluate(nn.Module):
         super().__init__()
         self.policy = model
 
-    def forward(self, x, action, valid):
-        return evaluate(self.policy, x, action, valid)
+    def forward(self, x, action, valid, labels=None, tau=0.05, margin=0.02):
+        return evaluate(self.policy, x, action, valid, labels, tau, margin)
+
+
+def labels_of(chunk, T, device):
+    """A minibatch's search labels (trajectories' 'search', from the actors) -> search_loss's labels, or None."""
+    parts = [(b, t['search']) for b, t in enumerate(chunk) if 'search' in t]
+    if not parts:
+        return None
+    K = max(p['cells'].shape[1] for _, p in parts)
+    pad = lambda a, v: np.pad(a, ((0, 0), (0, K - a.shape[1])), constant_values=v)  # noqa: E731
+    return dict(rows=torch.from_numpy(np.concatenate([b * T + p['t'] for b, p in parts])).to(device),
+                slot=torch.from_numpy(np.concatenate([p['slot'] for _, p in parts])).to(device),
+                cells=torch.from_numpy(np.concatenate([pad(p['cells'], -1) for _, p in parts])).to(device),
+                scores=torch.from_numpy(np.concatenate([pad(p['scores'], np.nan) for _, p in parts])).to(device))
 
 
 class Critic(nn.Module):
@@ -323,8 +368,9 @@ def update(model, reference, optimizer, batches, args, device, objective=None):
                 t['ref'] = parts
     for chunk, x, _, valid in schedule(batches, args.epochs):
         y = targets(chunk, ('action', 'logp', 'adv'), device)
+        labels = labels_of(chunk, x['scalars'].shape[1], device) if args.search_coef else None
         with torch.autocast(**autocast):
-            new = objective(x, y['action'], valid)
+            new = objective(x, y['action'], valid, labels, args.search_tau, args.search_margin)
         ref_what, ref_which, ref_tile = (torch.cat(parts) for parts in zip(*(t['ref'] for t in chunk)))
         ratio = (new['logp'] - y['logp'][valid]).exp()
         adv = (y['adv'][valid] - mean) / std
@@ -336,6 +382,8 @@ def update(model, reference, optimizer, batches, args, device, objective=None):
                   + torch.where(new['play'], log_r.exp() - 1 - log_r, torch.zeros_like(log_r))).mean()
         # the policy's own value head is left alone (0 x keeps a gradient on every parameter DDP expects)
         loss = policy_loss - args.entropy * ent + args.kl_coef * kl_ref + 0 * new['value'].sum()
+        if new['search'] is not None:  # the placement search's labels (actors' search_frac of the games)
+            loss = loss + args.search_coef * new['search']
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         finite_step(model.parameters(), optimizer, 0.5, stats, 'skipped')
@@ -345,6 +393,10 @@ def update(model, reference, optimizer, batches, args, device, objective=None):
             stats['kl_ref'].append(kl_ref.item())
             stats['approx_kl'].append(((ratio - 1) - ratio.log()).mean().item())
             stats['clip_frac'].append(((ratio - 1).abs() > args.clip).float().mean().item())
+            if new['search'] is not None:
+                stats['search_loss'].append(new['search'].item())
+                for k, v in new['search_metrics'].items():
+                    stats[k].append(v)
     for t in trajectories:
         del t['ref']
     return {k: float(np.mean(v)) for k, v in stats.items()}
@@ -421,7 +473,13 @@ DEFAULTS = dict(updates=100000, batch=512, max_lag=4, lr=2e-5, epochs=2, minibat
                 critic_lr=1e-4, critic_epochs=4, entropy=0.002, kl_coef=0.05, value_warmup=20, self_play=0.5,
                 pool_size=6, snapshot_every=100, checkpoint_every=10, shaping=0.1, margin=0.2, eval_frac=0.25,
                 channels_last=True, against='', frozen_temperature=1.0, learner_temperature=1.0,
-                learner_mix=0.0, bc_index='', bc_coef=0.2, bc_batch=8, overlap=False)
+                learner_mix=0.0, bc_index='', bc_coef=0.2, bc_batch=8, overlap=False,
+                search_frac=0.0, search_k=8, search_horizon=160, search_material=0.3, search_coef=0.5, search_tau=0.05,
+                search_margin=0.02, engine_lib='', engine_assets='')
+# search_*: placement search in the actors (cr/search.py; 27 Oct): in search_frac of the learning games the learning seat's
+# card plays are also tried at its top search_k tiles, each played search_horizon ticks in a forked copy; PPO still
+# learns the tile played, and the tile head learns the search's ranking (search_loss, weight search_coef).
+# engine_lib / engine_assets: an engine build and its game data (e.g. ~/conv-1025/ENGINES/160402020, DATA/d22).
 
 
 
@@ -637,7 +695,8 @@ def learn(args, settings):
                 actors=sum(r['actors'] for r in everyone), wait_s=round(t1 - t0, 1), update_s=round(t2 - t1, 1), lr=lr,
                 value_only=version - 1 < s.value_warmup,
                 actor_ms={k: round(1000 * sum(t.get(k, 0) for t in times) / steps, 2)
-                          for k in ('features', 'wait', 'engine')},
+                          for k in ('features', 'wait', 'engine', 'search')},
+                searches_per_game=round(sum(t.get('searches', 0) for t in times) / max(1, sum(t.get('games', 0) for t in times)), 2),
                 refused_per_game=round(sum(t.get('refused', 0) for t in times) / max(1, sum(t.get('games', 0) for t in times)), 2),
                 score={n: round(float(np.mean(results[n])), 3) for n in sorted(results) if results[n]},
                 ticks=float(np.mean([row['tick'] for row in finished] or [0])),

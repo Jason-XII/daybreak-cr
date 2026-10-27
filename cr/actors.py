@@ -24,7 +24,7 @@ import traceback
 import numpy as np
 import torch
 
-from cr import matchmaking, observation as C, policy
+from cr import matchmaking, observation as C, policy, search
 from cr.engine import Engine, Game, margin, potential, raise_thread_limit, tower_hp
 
 OVERFLOW_PENALTY = 0.002
@@ -80,12 +80,20 @@ class Seat:
 
     def __init__(self):
         self.rows, self.opp, self.action, self.logp, self.value, self.reward = [], [], [], [], [], []
+        self.search = []  # (decision, hand slot, candidate cells, their scores): placement search labels
 
     def trajectory(self, **extra):
+        labels = {}
+        if self.search:  # candidates padded to the widest: cell -1, score NaN
+            K = max(len(c) for _, _, c, _ in self.search)
+            labels = dict(search=dict(
+                t=np.array([t for t, _, _, _ in self.search], np.int64), slot=np.array([s for _, s, _, _ in self.search], np.int64),
+                cells=np.array([c + [-1] * (K - len(c)) for _, _, c, _ in self.search], np.int64),
+                scores=np.array([v + [np.nan] * (K - len(v)) for _, _, _, v in self.search], np.float32)))
         return dict(inputs={k: policy.pad_stack([r[k] for r in self.rows]) for k in self.rows[0]},
                     opp={k: np.stack([r[k] for r in self.opp]) for k in PRIVATE},
                     action=np.array(self.action, np.int64), logp=np.array(self.logp, np.float32),
-                    value=np.array(self.value, np.float32), reward=np.array(self.reward, np.float32), **extra)
+                    value=np.array(self.value, np.float32), reward=np.array(self.reward, np.float32), **labels, **extra)
 
 
 def redirect(run, name):
@@ -107,7 +115,7 @@ def collector(index, run, addresses, key, affinity=False):
     pool = json.loads(Path(s['pool']).read_text())
     vocab = C.Vocab.load(run / 'vocab.json')
     legal = C.cached_legal()
-    engine = Engine(s['engine'])
+    engine = Engine(s['engine'], lib=s.get('engine_lib'), assets=s.get('engine_assets'))
     link = Link(run, weights=False, index=index)
     _, opponents = link.exchange([], [], {})
     server, address, decks = None, None, None
@@ -132,6 +140,7 @@ def collector(index, run, addresses, key, affinity=False):
         engine.overlap = [bool(s.get('overlap'))] * 2  # the run's rule for every seat (Game.views() adds the mask)
         game = Game(engine, pair, rng.randrange(1 << 30), {0: vocab, 1: vocab}, legal)
         seats = {o: Seat() for o in (0, 1) if models[o][0] == 'current'}
+        searching = bool(seats) and not judged and rng.random() < s.get('search_frac', 0.0)  # label this game's tiles
         start = tower_hp(game.state)
         phi = [potential(game.state, start, o) for o in (0, 1)]
         version, shape = None, None
@@ -148,9 +157,19 @@ def collector(index, run, addresses, key, affinity=False):
             version = used if version is None else version  # the game counts as played by its first weights
             t2 = time.perf_counter()
             choices = {}
-            for o, (a, lp, v) in enumerate(replies):
+            for o, (a, lp, v, top) in enumerate(replies):
                 if o in seats:
                     seat = seats[o]
+                    if searching and a >= policy.CARD:  # the tiles the policy weighs for its card, each played out
+                        t3 = time.perf_counter()
+                        slot, cells = (a - policy.CARD) // policy.CELLS, list(dict.fromkeys([(a - policy.CARD) % policy.CELLS] + top))
+                        scores = search.search(engine, search.plays(o, slot, cells), o, start, s.get('search_horizon', 160),
+                                               s.get('search_material', 0.3))
+                        if len(cells) > 1 and None not in scores:
+                            seat.search.append((len(seat.action), slot, cells, scores))
+                        timing['searches'] += 1
+                        timing['search_failed'] += len(cells) > 1 and None in scores
+                        timing['search'] += time.perf_counter() - t3
                     seat.rows.append(rows[o])
                     seat.opp.append(rows[1 - o])  # for the critic only
                     seat.action.append(a)
@@ -266,11 +285,12 @@ class Decider:
     run op by op, a call launched ~280 kernels, 9 ms of CPU for 0.7 ms of GPU work, whatever the batch."""
 
     def __init__(self, models, device, core, capacity=1024, fast=True, channels_last=False, frozen_temperature=1.0,
-                 overlap=False):
+                 overlap=False, top=0):
         torch.backends.mha.set_fastpath_enabled(False)  # the learner's attention path: same numerics, and capturable
         self.models, self.device, self.capacity = models, device, capacity
         self.frozen_temperature = frozen_temperature  # card/tile temperature of every model but 'current' (as played)
         self.overlap = overlap  # the run's overlap rule, for every model it serves
+        self.top = top  # 'current' also returns its sampled card's `top` best tiles (the search's candidates)
         self.rows = {}  # (collector, owner) -> row of the LSTM states; row `capacity` is scratch (padding rows)
         self.states = {}  # LSTM size -> (h, c), each [1, capacity + 1, size]
         self.h, self.c = self.state(core)
@@ -318,10 +338,13 @@ class Decider:
             h, c = self.states[model.config.core]
             out = model(x, (h.index_select(1, index), c.index_select(1, index)))
             # the press floor is the learner's exploration only: frozen models play as deployed (live has none)
-            action, logp = policy.sample(model, out, x, policy.ABILITY_EXPLORE if model is self.models.get('current') else 0.0)
+            current = model is self.models.get('current')
+            action, logp, *top = policy.sample(model, out, x, policy.ABILITY_EXPLORE if current else 0.0,
+                                               self.top if current else 0)
             h.index_copy_(1, index, out['state'][0].float())
             c.index_copy_(1, index, out['state'][1].float())
-        return action, logp.float(), out['value'][:, 0].float()
+        top = top[0] if top else action.new_zeros(len(action), 0)
+        return action, logp.float(), out['value'][:, 0].float(), top
 
     def _graph(self, name, staged):
         B, O = staged['obj_side'].shape[0], staged['obj_side'].shape[2]
@@ -372,8 +395,8 @@ class Decider:
             # Groups remain live until the aggregate readback. A shared capture pool can reuse a prior
             # group's storage when a new shape is first captured, corrupting its queued output.
             with torch.cuda.graph(graph):
-                action, logp, value = self._decide(model, x, index)
-                outputs = torch.stack((action.float(), logp, value), 1)
+                action, logp, value, top = self._decide(model, x, index)
+                outputs = torch.cat((torch.stack((action.float(), logp, value), 1), top.float()), 1)
             self.graphs[key] = (host, device, arrays, outputs, graph)
         return self.graphs[key]
 
@@ -381,14 +404,15 @@ class Decider:
         """Finish every queued group together; also fences pinned buffers before they can be reused."""
         if not pending:
             return
-        values = torch.cat([out for _, out in pending]).cpu().tolist()
         order = [i for part, _ in pending for i in part]
-        for i, (action, logp, value) in zip(order, values):
-            results[i] = (int(action), logp, value)
+        values = [row for _, out in pending for row in out.cpu().tolist()]  # rows differ in width by model (top tiles)
+        for i, (action, logp, value, *top) in zip(order, values):
+            results[i] = (int(action), logp, value, [int(c) for c in top if c >= 0])
         pending.clear()
 
     def act(self, requests):
-        """requests: [(seat, model name, its checkpoint, wire() row)] -> [(action, logp, value)], same order. A model
+        """requests: [(seat, model name, its checkpoint, wire() row)] -> [(action, logp, value, top tiles)], same order
+        (top tiles: 'current''s search candidates with Decider(top=...), else []). A model
         is cached by its checkpoint's path (by name without one, as 'current'): names like v000100 recur across runs."""
         by_model = defaultdict(list)
         for i, (_, name, path, _) in enumerate(requests):
@@ -439,15 +463,16 @@ class Decider:
                         x[k].copy_(torch.from_numpy(v), non_blocking=True)
                     static_index.copy_(torch.tensor(index), non_blocking=True)
                     graph.replay()
-                action, logp, value = (o[:len(rows)].tolist() for o in outputs)
-                for i, a, lp, v in zip(part, action, logp, value):
-                    results[i] = (a, lp, v)
+                action, logp, value, top = (o[:len(rows)].tolist() for o in outputs)
+                for i, a, lp, v, t in zip(part, action, logp, value, top):
+                    results[i] = (a, lp, v, [c for c in t if c >= 0])
         self._readback(pending, results)
         return results
 
 
 WEIGHTS_POLL = 5  # s between a decision server's asks for newer weights
-SERVED = ('learner_temperature', 'learner_mix', 'frozen_temperature', 'channels_last', 'overlap')  # applied once
+SERVED = ('learner_temperature', 'learner_mix', 'frozen_temperature', 'channels_last', 'overlap', 'search_frac',
+          'search_k')  # applied once
 
 
 def served(run):
@@ -476,7 +501,8 @@ def server(sid, run, listener, gpu, mps, fast=True):
     current.overlap = bool(settings.get('overlap'))
     decider = Decider({'current': current}, device, current.config.core, fast=fast,
                       channels_last=settings.get('channels_last', False),
-                      frozen_temperature=settings.get('frozen_temperature', 1.0), overlap=current.overlap)
+                      frozen_temperature=settings.get('frozen_temperature', 1.0), overlap=current.overlap,
+                      top=settings.get('search_k', 8) if settings.get('search_frac') else 0)
     conns, arrivals, polled, stats = [], queue.Queue(), time.monotonic(), defaultdict(float)
 
     def accept():

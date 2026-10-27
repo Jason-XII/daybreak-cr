@@ -952,3 +952,18 @@ matchmaking), in `~/cr-ppo/runs/hog26`:
   games against the champion, the same four benchmarks), so the comparison with v240 stays clean.
 
 Start (update 1, 1,024 games): Hog-playing v240 scores 33% against v240 on pool decks and 60% against the IL model.
+
+## 15. What the model gets that a human doesn't, and decision timing (25 October)
+
+**The opponent's plays before they land.** The model sees an opponent play from 13 ticks before it lands
+(`observation.OPP_VISIBLE`: the median time the command sits in our client's queue; in real games 2–21 ticks; in the simulator
+always 13). A human sees it only at landing. Test (`experiments/opp_visible_arena.py`, `~/cr-ppo/diag/oppvis-1025/`):
+gen-h v40 against itself, A sees opponent plays only at landing (0 ticks), B as trained; 400 paired games, pool decks,
+T 0.05, overlap for both. **A 51.2 ± 2.5%** (plays 37.0 / 37.0 per game, refused 0.41 / 0.42): the early view is
+worth nothing, so it can be turned off (live too) without cost. Still read from memory and not seen by a human: the
+opponent's exact elixir, when each of their cards is back in hand, exact hp and unit states (untested).
+
+**Deciding every tick instead of every 5** (`experiments/tick_arena.py`, `~/cr-ppo/diag/tick-1025/`): gen-h v40 against
+itself, A per tick, B every 5 ticks. Each tick decided as the 5-tick decision (the LSTM commits every 5 ticks, P(play)
+per tick = 1 − P(wait)^(1/5)): **A 50.5 ± 2.5%** over 400, no gain. The policy as is, every tick: 37.5 ± 2.7% over 325
+(its memory steps 5× too often; repeated ability taps refused). The 250 ms decision step is not what limits it.

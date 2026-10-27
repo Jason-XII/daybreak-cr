@@ -152,7 +152,10 @@ def _report_cpus(loader):
 
 
 class Engine:
-    def __init__(self, clapha_dir, workdir=None):
+    def __init__(self, clapha_dir, workdir=None, lib=None, assets=None):
+        """clapha_dir: the clapha-engine checkout (its crx code); lib / assets: an engine build's folder (libg.so) and its
+        game data (27 Oct: a release's ENGINES/<build> and DATA/<version>), by default the checkout's engine/ and
+        data/assets."""
         raise_thread_limit()  # also here, for scripts that start a single engine
         clapha = Path(clapha_dir).expanduser().resolve()
         sys.path.insert(0, str(clapha / 'crx'))
@@ -162,8 +165,9 @@ class Engine:
             observe._i32, observe._u64 = C._native_features.i32, C._native_features.u64
         _report_cpus(loader)
         from env import CrxEnv
-        self.env = CrxEnv(clapha / 'engine', Path(workdir or tempfile.mkdtemp(prefix='clapha-')),
-                          str(clapha / 'data' / 'assets'))
+        self.env = CrxEnv(Path(lib).expanduser() if lib else clapha / 'engine',
+                          Path(workdir or tempfile.mkdtemp(prefix='clapha-')),
+                          str(Path(assets).expanduser() if assets else clapha / 'data' / 'assets'))
         self.state, self.generation, self.sequence, self.pending = None, 0, 0, []
         self.expired = 0  # accepted plays that never landed (held too long, or the card gone): should stay ~0
         # per owner (22 Oct): may tap another card while one is in flight, as humans do (5.7% of their plays come
@@ -442,6 +446,8 @@ def make_match(pair, seed):
     battle['lvlcap'], battle['cardlvlmin'] = pair['lvlcap'], pair['cardlvlmin']
     for owner in (0, 1):
         battle[f'deck{owner}']['sp'] = pair['decks'][owner]
+        if 'sc' in pair:  # tower troops (tools/build_pool.py's pools)
+            battle[f'deck{owner}']['sc'] = pair['sc'][owner]
         battle[f'avatar{owner}']['expLevel'] = pair['exp'][owner]
         battle['hbd'][owner]['kt'] = pair['kt'][owner]
     return match
@@ -495,11 +501,13 @@ def tower_hp(state):
 
 
 def margin(state, start, owner):
-    """Our lowest tower's hp fraction minus theirs (a destroyed tower is 0); `start` is tower_hp at the start."""
+    """Our towers' remaining hp fractions summed minus theirs (a destroyed tower is 0), over 3: in [-1, 1], and never flat
+    while a tower differs. `start` is tower_hp at the start. (27 Oct, the user's choice: the old lowest-tower margin
+    counted destroyed towers as 0, so at 1-1 crowns it was always 0.)"""
     towers = tower_hp(state)
-    low = [min(towers[tid][1] / max(full, 1) if tid in towers else 0.0 for tid, (o, full, _) in start.items() if o == side)
-           for side in (owner, 1 - owner)]
-    return low[0] - low[1]
+    left = [sum(towers[tid][1] / max(full, 1) for tid, (o, full, _) in start.items() if o == side and tid in towers)
+            for side in (owner, 1 - owner)]
+    return (left[0] - left[1]) / 3
 
 
 def potential(state, start, owner):

@@ -37,6 +37,7 @@ class Config:
     dist_bias: int = 0     # 1: object attention biased by the distance between the two objects (per head, per tile)
     card_stats: int = 0    # > 0 (22 Oct): every card and unit id also gets its fixed stats from the game data (this
                            # many fields, assets/card_stats.json: range, targets, hp, damage, speed, splash, ...)
+    interact: int = 0      # > 0 (26 Oct): heads of Interact, a card-to-unit attention branch added to the tile scores
 
 
 class ResBlock(nn.Module):
@@ -73,6 +74,52 @@ def mlp(*widths):
     for a, b in zip(widths, widths[1:]):
         layers += [nn.Linear(a, b), nn.ReLU()]
     return nn.Sequential(*layers[:-1])
+
+
+def geometry(dx, dy):
+    """Offsets in tiles (unit - tile) -> [.., 17]: distance in 12 radial bumps (0 .. 11 tiles), and the signed offset."""
+    dist = (dx * dx + dy * dy).sqrt()
+    mu = torch.arange(12, device=dx.device, dtype=dx.dtype)
+    return torch.cat([torch.exp(-0.5 * (dist[..., None] - mu) ** 2),
+                      torch.stack([dx / 9, dy / 16, dist / 18, (dx > 0).to(dx.dtype), (dy > 0).to(dy.dtype)], -1)], -1)
+
+
+class Interact(nn.Module):
+    """Each tile's query (the chosen card, the core, the tile) attends over the trunk's unit tokens, with logits from
+    content and from where the unit is relative to the tile (the query picks which distances and directions matter, so
+    a Cannon's range and a Fireball's radius can differ) -> one score per tile. A null key lets a tile attend to no unit
+    (an empty board). The last layer starts at zero: the head starts as the conv head alone. (distill3.py, 22 Oct.)"""
+
+    def __init__(self, d_obj, d_card, d_core, heads=4, dk=32, geo=17):
+        super().__init__()
+        self.h, self.dk = heads, dk
+        self.q = nn.Linear(d_card + d_core, heads * dk)
+        self.pos = nn.Parameter(torch.randn(CELLS, heads * dk) * 0.02)
+        self.k, self.v = nn.Linear(d_obj, heads * dk), nn.Linear(d_obj, heads * dk)
+        self.g = nn.Parameter(torch.randn(heads, dk, geo) * 0.1)
+        self.null_k, self.null_v = nn.Parameter(torch.zeros(heads, dk)), nn.Parameter(torch.zeros(heads, dk))
+        self.out = mlp(heads * (2 * dk + geo), 128, 1)
+        nn.init.zeros_(self.out[-1].weight)
+        nn.init.zeros_(self.out[-1].bias)
+        cell = torch.arange(CELLS)
+        self.register_buffer('cx', (cell % W).float() + 0.5, persistent=False)
+        self.register_buffer('cy', (cell // W).float() + 0.5, persistent=False)
+
+    def forward(self, card, core, tok, present, oxy):
+        """card [n, d_card], core [n, d_core], tok [n, L, d_obj], present [n, L], oxy [n, L, 2] in tiles -> [n, CELLS]."""
+        n, L = present.shape
+        h, dk = self.h, self.dk
+        q = (self.q(torch.cat([card, core], -1))[:, None] + self.pos[None]).view(n, CELLS, h, dk)
+        k, v = self.k(tok).view(n, L, h, dk), self.v(tok).view(n, L, h, dk)
+        phi = geometry(oxy[:, None, :, 0] - self.cx[None, :, None], oxy[:, None, :, 1] - self.cy[None, :, None])
+        u = torch.einsum('nchd,hdg->nchg', q, self.g)
+        logits = torch.einsum('nchd,nlhd->nchl', q, k) / dk ** 0.5 + torch.einsum('nchg,nclg->nchl', u, phi)
+        logits = logits.masked_fill(~present[:, None, None, :], float('-inf'))
+        null = torch.einsum('nchd,hd->nch', q, self.null_k)[..., None] / dk ** 0.5
+        a = torch.softmax(torch.cat([logits, null], -1), -1)
+        out_v = torch.einsum('nchl,nlhd->nchd', a[..., :L], v) + a[..., L:] * self.null_v
+        out_g = torch.einsum('nchl,nclg->nchg', a[..., :L], phi)              # where the attended units are
+        return self.out(torch.cat([out_v, out_g, q], -1).flatten(2)).squeeze(-1)
 
 
 class Policy(nn.Module):
@@ -120,6 +167,7 @@ class Policy(nn.Module):
         self.film = nn.Linear(c.core + d, 2 * ch)              # the picture conditioned on the chosen card
         self.tile = nn.Conv2d(ch, 1, 1)
         self.tile_blocks = nn.ModuleList([ResBlock(ch, c.res_norm) for _ in range(c.tile_blocks)])
+        self.interact = Interact(c.object_dim, d, c.core, c.interact) if c.interact else None
         # ponytail: distance only (FirstLight also biases by relation type and extent); add those if this helps
         self.dist_bias = nn.Embedding(16, c.attention_heads) if c.dist_bias and c.attention_layers else None
         if self.dist_bias is not None:
@@ -175,7 +223,7 @@ class Policy(nn.Module):
                 grid = F.relu(conv(grid))
         count = present.sum(1, keepdim=True).clamp(min=1)
         pooled_objects = torch.cat([o.sum(1) / count, o.masked_fill(~present.unsqueeze(-1), -1e4).amax(1).clamp(min=-1e3)], -1)
-        return grid, pooled_objects
+        return grid, pooled_objects, o
 
     def forward(self, x, state=None):
         """x: dict of [B, T, ...] tensors. -> dict: what [B, T, 4], which [B, T, 4], grid [B*T, C, H, W] (for tile
@@ -183,7 +231,7 @@ class Policy(nn.Module):
         B, T = x['scalars'].shape[:2]
         N = B * T
         flat = {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()}
-        grid, pooled_objects = self._objects(flat, N)
+        grid, pooled_objects, tokens = self._objects(flat, N)
         hand = torch.cat([self.card(flat['hand_card']), self.card(flat['mirror_card']), flat['hand_float']], -1)
         rest = torch.cat([
             self.card(flat['cycle_card']).flatten(1), flat['ability'].flatten(1),
@@ -207,7 +255,7 @@ class Policy(nn.Module):
                                            ~ability_ready], -1).reshape(B, T, 4), float('-inf'))
         value = self.value(torch.cat([core, x['scalars']], -1)).squeeze(-1)
         out = {'what': what, 'which': which.reshape(B, T, 4), 'grid': grid, 'core': flat_core, 'value': value,
-               'state': state, 'hand': hand}
+               'state': state, 'hand': hand, 'tokens': tokens}
         if self.config.next_play:
             out['next_when'] = self.next_when(core)
             out['next_which'] = self.next_which(core_hand).squeeze(-1).masked_fill(empty, float('-inf')).reshape(B, T, 4)
@@ -215,7 +263,7 @@ class Policy(nn.Module):
 
     def tiles(self, out, x, slot):
         """Tile scores [N, CELLS] for the card in hand slot `slot` [N] (the picture conditioned on that card), with
-        illegal tiles -inf when x has legal masks."""
+        illegal tiles -inf when x has legal masks. With Interact: out also needs 'tokens', x 'obj_side' and 'obj_float'."""
         N = out['core'].shape[0]
         card = self.card(x['hand_card'].reshape(N, 4).gather(1, slot.unsqueeze(1)).squeeze(1))
         # in fp32 even under autocast: the scores drift together (softmax ignores a shared offset) into the hundreds or
@@ -226,6 +274,10 @@ class Policy(nn.Module):
             for block in self.tile_blocks:
                 g = block(g)
             scores = self.tile(g).reshape(N, CELLS)
+            if self.interact is not None:
+                f = x['obj_float'].float()
+                scores = scores + self.interact(card.float(), out['core'].float(), out['tokens'].float(),
+                                                x['obj_side'] > 0, torch.stack([f[..., 0] * W, f[..., 1] * H], -1))
         if 'legal' in x:
             legal = x['legal'].reshape(N, 4, CELLS).gather(1, slot.view(N, 1, 1).expand(-1, 1, CELLS)).squeeze(1)
             scores = scores.masked_fill(~legal, float('-inf'))
@@ -346,8 +398,8 @@ def which_logp(which, x, overlap=False):
 
 def tile_logp(model, out, x, slot, rows=None):
     """log p(cell | slot) [n, CELLS] for the decisions `rows` (default all) of a forward pass `out` and its flat inputs x."""
-    sub = out if rows is None else {'core': out['core'][rows], 'grid': out['grid'][rows]}
-    sx = {k: x[k] if rows is None else x[k][rows] for k in ('hand_card', 'legal')}
+    sub = out if rows is None else {k: out[k][rows] for k in ('core', 'grid', 'tokens') if k in out}
+    sx = {k: x[k] if rows is None else x[k][rows] for k in ('hand_card', 'legal', 'obj_side', 'obj_float') if k in x}
     return _log_softmax(model.tiles(sub, sx, slot))
 
 
@@ -355,7 +407,7 @@ def flat(out, x):
     """A forward pass on [B, T] inputs -> its heads and inputs as [B * T, ...]."""
     N = out['core'].shape[0]
     return ({'what': out['what'].reshape(N, 4), 'which': out['which'].reshape(N, 4), 'core': out['core'],
-             'grid': out['grid']}, {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()})
+             'grid': out['grid'], **({'tokens': out['tokens']} if 'tokens' in out else {})}, {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()})
 
 
 def _gumbel_argmax(logp):
@@ -380,8 +432,9 @@ def sharpen(logp, t, mix=0.0):
     return torch.where(legal, torch.logaddexp(a, b), torch.full_like(logp, float('-inf')))
 
 
-def sample(model, out, x, explore=0.0):
-    """One action per decision of a forward pass on [N, 1] inputs -> (action [N], its log-prob [N])."""
+def sample(model, out, x, explore=0.0, top=0):
+    """One action per decision of a forward pass on [N, 1] inputs -> (action [N], its log-prob [N]); with top > 0 also
+    the sampled card's `top` best tiles [N, top] (-1 past the legal ones: the placement search's candidates)."""
     out, x = flat(out, x)
     overlap = getattr(model, 'overlap', False)  # arena.py --a-overlap: may tap a card while another is in flight
     what_lp, which_lp = what_logp(out['what'], x, explore, out['which'], overlap), which_logp(out['which'], x, overlap)
@@ -394,7 +447,11 @@ def sample(model, out, x, explore=0.0):
     play = what == PLAY
     pick = lambda lp, i: lp.gather(1, i.unsqueeze(1)).squeeze(1)  # noqa: E731
     logp = pick(what_lp, what) + torch.where(play, pick(which_lp, slot) + pick(tile_lp, cell_), torch.zeros_like(what_lp[:, 0]))
-    return torch.where(play, CARD + slot * CELLS + cell_, what), logp
+    action = torch.where(play, CARD + slot * CELLS + cell_, what)
+    if not top:
+        return action, logp
+    best = tile_lp.topk(top, -1)
+    return action, logp, torch.where(torch.isfinite(best.values), best.indices, torch.full_like(best.indices, -1))
 
 
 def split(action):
