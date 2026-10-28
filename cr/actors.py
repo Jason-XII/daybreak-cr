@@ -592,6 +592,12 @@ def _child(target, *args):
         os._exit(1)
 
 
+def decision_address(job, server):
+    """Linux abstract sockets survive /tmp replacement; other hosts keep filesystem sockets."""
+    name = f'cr-ppo-{job}-{server}'
+    return b'\0' + name.encode() if sys.platform == 'linux' else f'/tmp/{name}.sock'
+
+
 def act(args):
     """This job's decision servers (one per --servers, on its GPUs) and collectors; restarts any that dies (the engine
     can segfault)."""
@@ -610,7 +616,7 @@ def act(args):
     mps = start_mps() if gpus and args.mps and servers > len(gpus) else None
     key = os.urandom(16)
     job = os.environ.get('SLURM_JOB_ID', os.getpid())
-    listeners = [Listener(f'/tmp/cr-ppo-{job}-{sid}.sock', 'AF_UNIX', authkey=key) for sid in range(servers)]
+    listeners = [Listener(decision_address(job, sid), 'AF_UNIX', authkey=key) for sid in range(servers)]
     ctx = mp.get_context('fork')
 
     def launch(kind, i):
@@ -622,6 +628,7 @@ def act(args):
     workers = {('server', i): launch('server', i) for i in range(servers)}
     workers.update({('collector', i): launch('collector', i) for i in range(args.collectors)})
     print(f'{servers} decision servers on GPUs {gpus}{" (MPS)" if mps else ""}, {args.collectors} collectors; '
+          f'{"abstract" if sys.platform == "linux" else "filesystem"} Unix sockets; '
           f'logs in {run}/logs', flush=True)
     while True:
         time.sleep(10)

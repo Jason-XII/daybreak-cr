@@ -62,6 +62,18 @@ ssh cluster 'tail -f ~/cr-ppo/runs/ppo-4/metrics.jsonl' | jq -c '{v:.version, gp
 - `wait_s` / `update_s`: learner waiting for data / time per update.
 - `actors`: should be 105.
 
+**Actor socket recovery (28 October 2026)**
+
+gen-r6e stopped receiving games after the compute nodes' `/tmp` filesystems were replaced.
+The decision servers still held listeners on the old filesystem inodes, while collectors connected
+to replacement socket files and received `ECONNREFUSED`. Restarting the learner alone could not
+repair those actor connections; both actor jobs had to restart. Compare `ss -xlne` with `stat` on
+the socket path to distinguish this failure from GPU or memory exhaustion.
+
+Linux actor jobs now use authenticated abstract Unix sockets, whose names live in the kernel
+instead of `/tmp`. The other-platform filesystem fallback is unchanged. The regression test checks
+connection, authentication, message exchange and rebinding without depending on filesystem files.
+
 ## 3. Timeline and findings
 
 | Updates | Change | Why / result |
