@@ -480,7 +480,7 @@ def reachable_ip():
         probe.close()
 
 
-DEFAULTS = dict(updates=100000, batch=512, max_lag=4, lr=2e-5, epochs=2, minibatch=8, clip=0.2, gamma=0.999, lam=0.95,
+DEFAULTS = dict(updates=100000, batch=512, max_lag=4, lr=2e-5, epochs=2, minibatch=8, clip=0.2, gamma=0.999, lam=0.99,
                 critic_lr=1e-4, critic_epochs=4, entropy=0.002, kl_coef=0.05, value_warmup=20, self_play=0.5,
                 pool_size=6, snapshot_every=100, checkpoint_every=10, shaping=0.1, margin=0.2, eval_frac=0.25,
                 channels_last=True, against='', frozen_temperature=1.0, learner_temperature=1.0,
