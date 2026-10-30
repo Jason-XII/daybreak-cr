@@ -1,0 +1,25 @@
+{
+ "ids": [
+  203000023,
+  719442571,
+  1741956296,
+  2603129653,
+  1892649387,
+  3703800829,
+  3268746011,
+  3520159213,
+  203000042,
+  2014338823,
+  3782760620,
+  388686531,
+  2640711038,
+  106603643,
+  3666681883,
+  139000075,
+  1117840696,
+  521058132,
+  2021803420
+ ],
+ "init": {},
+ "note": "30 Oct 2026: October ids missing from the 15 Oct vocabulary: the 15 seen in 150 training-pool games (most common first) and 4 October evolution units. All start as the unknown row, so the extended model plays exactly as before and training separates them. A semantic start (heroes/evolutions = base + mean known variant offset) scored 48.3% (95% CI 44.6-52.0, 702 games) against the original v80 on the 13 affected decks: no gain, so not used."
+}

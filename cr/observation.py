@@ -1,5 +1,6 @@
 """What conversion, training and live play share: the model's observation of one decision (PlayerView), legal
 placement, the game clock and elixir timing. NumPy only (the converter runs without torch)."""
+import collections
 import json
 import math
 import os
@@ -108,14 +109,23 @@ class Vocab:
     """Card, data and effect ids -> indices; 0 = padding, 1 = unknown (UNKNOWN cards and ids unseen when built)."""
 
     def __init__(self, ids):
-        self.index = {int(i): n + 2 for n, i in enumerate(sorted(set(int(i) for i in ids)))}
+        # Append-only (30 Oct): an id's index is its position in the list, so a vocabulary extended with new ids at the
+        # end keeps every existing index (saved vocabularies before that are sorted lists: same indices as before).
+        # Save list(vocab.index), which is in index order; never re-sort it.
+        self.index, self.misses = {}, collections.Counter()
+        for i in (sorted(ids) if isinstance(ids, (set, frozenset)) else ids):
+            self.index.setdefault(int(i), len(self.index) + 2)
 
     def __call__(self, i):
         if i is None:
             return 0
         if i == UNKNOWN:
             return 1
-        return self.index.get(int(i) & 0xFFFFFFFF, 1)
+        n = self.index.get(int(i) & 0xFFFFFFFF)
+        if n is None:
+            self.misses[int(i) & 0xFFFFFFFF] += 1  # ids the model cannot tell apart (convert.py reports them)
+            return 1
+        return n
 
     def __len__(self):
         return len(self.index) + 2

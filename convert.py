@@ -784,6 +784,7 @@ def write_archive(path, game, vocab, legal, metadata):
             with archive.open(name + '.npy', 'w', force_zip64=True) as stream:
                 np.lib.format.write_array(stream, value, allow_pickle=False)
         if metadata['kept']:
+            vocab.misses.clear()
             for owner in (0, 1):
                 x, y = game_features(game, owner, vocab, legal)
                 t = targets(x, y)
@@ -791,6 +792,8 @@ def write_archive(path, game, vocab, legal, metadata):
                     put(f'p{owner}_{name}', value)
                 metadata['entries'].append(dict(file=path.name, tag=metadata['tag'], owner=owner,
                                                 validation=held_out(metadata['tag']), decisions=len(t['what'])))
+            if vocab.misses:  # ids this vocabulary lacks: the model sees them as unknown (the manifest sums them)
+                metadata['unknown_ids'] = {str(i): n for i, n in vocab.misses.items()}
         put('_metadata', np.frombuffer(json.dumps(metadata, sort_keys=True).encode(), dtype=np.uint8))
     os.replace(tmp, path)
 
@@ -985,6 +988,7 @@ def convert(args):
         run(retry)
 
     entries, rejected, missing = [], [], []
+    unknown, games_with = Counter(), Counter()
     for r in selected:
         path = archive_path(out, r['tag'])
         if not path.exists():
@@ -992,12 +996,20 @@ def convert(args):
             continue
         meta = read_metadata(path)
         entries += meta['entries']
+        for i, n in meta.get('unknown_ids', {}).items():
+            unknown[int(i)] += n
+            games_with[int(i)] += 1
         if not meta['kept']:
             rejected.append(dict(tag=r['tag'], why=meta.get('why')))
     if missing:
         raise SystemExit(f'{len(missing)} games have no archive yet (first: {missing[:5]}); rerun to finish')
-    manifest = dict(schema=dict(vocab=sorted(C.Vocab.load().index), legal=True, presses_at_tap=True), entries=entries,
-                    rejected=rejected)
+    manifest = dict(schema=dict(vocab=list(C.Vocab.load().index), legal=True, presses_at_tap=True), entries=entries,
+                    rejected=rejected,
+                    unknown_ids={str(i): dict(lookups=n, games=games_with[i]) for i, n in unknown.most_common()})
+    if unknown:  # 30 Oct: October-only units were silently 'unknown' for weeks; say it every time
+        print(f'WARNING: {len(unknown)} ids are not in the vocabulary and reach the model as unknown (most common: '
+              f'{[(i, games_with[i]) for i, _ in unknown.most_common(8)]} as (id, games)); append them with '
+              f'tools/extend_vocab.py and assets/vocab.json', flush=True)
     (out / 'manifest.tmp').write_text(json.dumps(manifest))
     (out / 'manifest.tmp').replace(out / 'manifest.json')
     print(f'{len(entries) // 2} games kept, {len(rejected)} rejected -> {out / "manifest.json"}', flush=True)

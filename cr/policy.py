@@ -55,7 +55,20 @@ class ResBlock(nn.Module):
         return x + (y if self.gate is None else self.gate * y)
 
 
-class CardEmbedding(nn.Embedding):
+def known(ids, n):
+    """Indices past a table of n rows -> 1 (unknown): a model reads ids appended to the vocabulary after it was
+    trained exactly as it did before they existed (30 Oct, append-only vocabulary)."""
+    return torch.where(ids < n, ids, torch.ones_like(ids))
+
+
+class IdEmbedding(nn.Embedding):
+    """nn.Embedding over vocabulary indices; ids past its table read as unknown (see known())."""
+
+    def forward(self, ids):
+        return super().forward(known(ids, self.num_embeddings))
+
+
+class CardEmbedding(IdEmbedding):
     """The card embedding plus a learned map of each id's fixed stats (`table`, from the game data). The map starts at
     zero, so the embedding starts as a plain one; no bias, so padding (id 0, zero stats) stays zero."""
 
@@ -66,7 +79,7 @@ class CardEmbedding(nn.Embedding):
         nn.init.zeros_(self.stat.weight)
 
     def forward(self, ids):
-        return super().forward(ids) + self.stat(self.table[ids])
+        return super().forward(ids) + self.stat(self.table[known(ids, self.num_embeddings)])
 
 
 def mlp(*widths):
@@ -131,7 +144,7 @@ class Policy(nn.Module):
             table = torch.zeros(c.vocab_size, c.card_stats) if card_table is None else torch.as_tensor(card_table)
             self.card = CardEmbedding(c.vocab_size, d, table)
         else:
-            self.card = nn.Embedding(c.vocab_size, d, padding_idx=0)
+            self.card = IdEmbedding(c.vocab_size, d, padding_idx=0)
         self.side = nn.Embedding(3, d, padding_idx=0)
         self.kind = nn.Embedding(6, d, padding_idx=0)
         # the effects' property vectors: fixed (from the game data), indexed like the vocabulary
@@ -180,7 +193,8 @@ class Policy(nn.Module):
     def _objects(self, x, N):
         c = self.config
         card, data = self.card(x['obj_card']), self.card(x['obj_data'])
-        eff = torch.cat([self.card(x['eff_id']), x['eff_left'].unsqueeze(-1), self.effect_table[x['eff_id']]], -1)
+        eff = torch.cat([self.card(x['eff_id']), x['eff_left'].unsqueeze(-1),
+                         self.effect_table[known(x['eff_id'], self.effect_table.shape[0])]], -1)
         eff = (self.effect(eff) * (x['eff_id'] > 0).unsqueeze(-1)).sum(-2)
         o = torch.cat([card, data + self.side(x['obj_side']) + self.kind(x['obj_kind']), eff,
                        torch.zeros_like(card), x['obj_float']], -1)

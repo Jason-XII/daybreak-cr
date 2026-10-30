@@ -115,7 +115,7 @@ def train(data, out, settings):
         if rank == 0:
             tmp = out / 'latest.tmp'
             torch.save(dict(config=asdict(config), model=policy.state_dict(), optimizer=optimizer.state_dict(),
-                            step=step, settings=settings, vocab=sorted(vocab.index)), tmp)
+                            step=step, settings=settings, vocab=list(vocab.index)), tmp)
             tmp.replace(out / 'latest.pt')
 
     def loader(entries, seed, validation=False, rank=0, world=1):
