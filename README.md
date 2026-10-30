@@ -195,3 +195,6 @@ from clapha-engine and FirstLight's reverse engineering.
 - [docs/TRAINING.md](docs/TRAINING.md): IL and PPO training — design, metrics, results and why each change was made.
 - [docs/THROUGHPUT.md](docs/THROUGHPUT.md): throughput measurements, optimized serving, validation and rollout details.
 - [docs/GAME_INTEGRATION.md](docs/GAME_INTEGRATION.md): how the live client is read and controlled.
+- [docs/LIVE_PENDING_BUDGET.md](docs/LIVE_PENDING_BUDGET.md): how the live player reserves elixir for pending cards and abilities.
+- [docs/PRECISE_TIMING.md](docs/PRECISE_TIMING.md): when a live play lands, measured against the official servers.
+- [docs/CONVERSION.md](docs/CONVERSION.md): converting human replays into training data.

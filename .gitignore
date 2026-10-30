@@ -11,3 +11,16 @@ _native_features*.so
 
 # Retired experiments kept locally, never committed (paired forks, search)
 attic/
+
+# Local research artifacts: run outputs, live captures, releases, slides, dated audits.
+# They hold machine paths and account-side data; keep them out of the public repo.
+analysis/
+benchmarks/
+releases/
+*.pptx
+docs/evidence/
+docs/figures/
+docs/CARD_DEPLOYMENT_LOCK.md
+docs/LIVE_LOSS_AUDIT.md
+docs/LIVE_OBSERVATION_AUDIT.md
+docs/RESEARCH-CEILING.md
