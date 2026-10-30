@@ -1,0 +1,925 @@
+{
+ "note": "evolution / hero card id -> base card id (tools/form_cards.py)",
+ "forms": {
+  "13000000": {
+   "name": "Knight_EV1",
+   "base": 26000000
+  },
+  "13000001": {
+   "name": "Archer_EV1",
+   "base": 26000001
+  },
+  "13000002": {
+   "name": "Goblins_EV1",
+   "base": 26000002
+  },
+  "13000003": {
+   "name": "Giant_EV1",
+   "base": 26000003
+  },
+  "13000004": {
+   "name": "Pekka_EV1",
+   "base": 26000004
+  },
+  "13000005": {
+   "name": "Minions_EV1",
+   "base": 26000005
+  },
+  "13000006": {
+   "name": "Balloon_EV1",
+   "base": 26000006
+  },
+  "13000007": {
+   "name": "Witch_EV1",
+   "base": 26000007
+  },
+  "13000008": {
+   "name": "Barbarians_EV1",
+   "base": 26000008
+  },
+  "13000009": {
+   "name": "Golem_EV1",
+   "base": 26000009
+  },
+  "13000010": {
+   "name": "Skeletons_EV1",
+   "base": 26000010
+  },
+  "13000011": {
+   "name": "Valkyrie_EV1",
+   "base": 26000011
+  },
+  "13000012": {
+   "name": "SkeletonArmy_EV1",
+   "base": 26000012
+  },
+  "13000013": {
+   "name": "Bomber_EV1",
+   "base": 26000013
+  },
+  "13000014": {
+   "name": "Musketeer_EV1",
+   "base": 26000014
+  },
+  "13000015": {
+   "name": "BabyDragon_EV1",
+   "base": 26000015
+  },
+  "13000016": {
+   "name": "Prince_EV1",
+   "base": 26000016
+  },
+  "13000017": {
+   "name": "Wizard_EV1",
+   "base": 26000017
+  },
+  "13000018": {
+   "name": "MiniPekka_EV1",
+   "base": 26000018
+  },
+  "13000019": {
+   "name": "SpearGoblins_EV1",
+   "base": 26000019
+  },
+  "13000020": {
+   "name": "GiantSkeleton_EV1",
+   "base": 26000020
+  },
+  "13000021": {
+   "name": "HogRider_EV1",
+   "base": 26000021
+  },
+  "13000022": {
+   "name": "MinionHorde_EV1",
+   "base": 26000022
+  },
+  "13000023": {
+   "name": "IceWizard_EV1",
+   "base": 26000023
+  },
+  "13000024": {
+   "name": "RoyalGiant_EV1",
+   "base": 26000024
+  },
+  "13000025": {
+   "name": "SkeletonWarriors_EV1",
+   "base": 26000025
+  },
+  "13000026": {
+   "name": "Princess_EV1",
+   "base": 26000026
+  },
+  "13000027": {
+   "name": "DarkPrince_EV1",
+   "base": 26000027
+  },
+  "13000028": {
+   "name": "ThreeMusketeers_EV1",
+   "base": 26000028
+  },
+  "13000029": {
+   "name": "LavaHound_EV1",
+   "base": 26000029
+  },
+  "13000030": {
+   "name": "IceSpirits_EV1",
+   "base": 26000030
+  },
+  "13000031": {
+   "name": "FireSpirits_EV1",
+   "base": 26000031
+  },
+  "13000032": {
+   "name": "Miner_EV1",
+   "base": 26000032
+  },
+  "13000033": {
+   "name": "ZapMachine_EV1",
+   "base": 26000033
+  },
+  "13000034": {
+   "name": "Bowler_EV1",
+   "base": 26000034
+  },
+  "13000035": {
+   "name": "RageBarbarian_EV1",
+   "base": 26000035
+  },
+  "13000036": {
+   "name": "BattleRam_EV1",
+   "base": 26000036
+  },
+  "13000037": {
+   "name": "InfernoDragon_EV1",
+   "base": 26000037
+  },
+  "13000038": {
+   "name": "IceGolemite_EV1",
+   "base": 26000038
+  },
+  "13000039": {
+   "name": "MegaMinion_EV1",
+   "base": 26000039
+  },
+  "13000040": {
+   "name": "BlowdartGoblin_EV1",
+   "base": 26000040
+  },
+  "13000041": {
+   "name": "GoblinGang_EV1",
+   "base": 26000041
+  },
+  "13000042": {
+   "name": "ElectroWizard_EV1",
+   "base": 26000042
+  },
+  "13000043": {
+   "name": "AngryBarbarians_EV1",
+   "base": 26000043
+  },
+  "13000044": {
+   "name": "Hunter_EV1",
+   "base": 26000044
+  },
+  "13000045": {
+   "name": "AxeMan_EV1",
+   "base": 26000045
+  },
+  "13000046": {
+   "name": "Assassin_EV1",
+   "base": 26000046
+  },
+  "13000047": {
+   "name": "RoyalRecruits_EV1",
+   "base": 26000047
+  },
+  "13000048": {
+   "name": "DarkWitch_EV1",
+   "base": 26000048
+  },
+  "13000049": {
+   "name": "Bats_EV1",
+   "base": 26000049
+  },
+  "13000050": {
+   "name": "Ghost_EV1",
+   "base": 26000050
+  },
+  "13000051": {
+   "name": "RamRider_EV1",
+   "base": 26000051
+  },
+  "13000052": {
+   "name": "MiniSparkys_EV1",
+   "base": 26000052
+  },
+  "13000053": {
+   "name": "Rascals_EV1",
+   "base": 26000053
+  },
+  "13000054": {
+   "name": "MovingCannon_EV1",
+   "base": 26000054
+  },
+  "13000055": {
+   "name": "MegaKnight_EV1",
+   "base": 26000055
+  },
+  "13000056": {
+   "name": "SkeletonBalloon_EV1",
+   "base": 26000056
+  },
+  "13000057": {
+   "name": "DartBarrell_EV1",
+   "base": 26000057
+  },
+  "13000058": {
+   "name": "Wallbreakers_EV1",
+   "base": 26000058
+  },
+  "13000059": {
+   "name": "RoyalHogs_EV1",
+   "base": 26000059
+  },
+  "13000060": {
+   "name": "GoblinGiant_EV1",
+   "base": 26000060
+  },
+  "13000061": {
+   "name": "Fisherman_EV1",
+   "base": 26000061
+  },
+  "13000062": {
+   "name": "EliteArcher_EV1",
+   "base": 26000062
+  },
+  "13000063": {
+   "name": "ElectroDragon_EV1",
+   "base": 26000063
+  },
+  "13000064": {
+   "name": "Firecracker_EV1",
+   "base": 26000064
+  },
+  "13000065": {
+   "name": "MightyMiner_EV1",
+   "base": 26000065
+  },
+  "13000066": {
+   "name": "ElixirGolem_EV1",
+   "base": 26000067
+  },
+  "13000067": {
+   "name": "BattleHealer_EV1",
+   "base": 26000068
+  },
+  "13000068": {
+   "name": "SkeletonKing_EV1",
+   "base": 26000069
+  },
+  "13000069": {
+   "name": "ArcherQueen_EV1",
+   "base": 26000072
+  },
+  "13000070": {
+   "name": "GoldenKnight_EV1",
+   "base": 26000074
+  },
+  "13000071": {
+   "name": "Monk_EV1",
+   "base": 26000077
+  },
+  "13000072": {
+   "name": "SkeletonDragons_EV1",
+   "base": 26000080
+  },
+  "13000073": {
+   "name": "WitchMother_EV1",
+   "base": 26000083
+  },
+  "13000074": {
+   "name": "ElectroSpirit_EV1",
+   "base": 26000084
+  },
+  "13000075": {
+   "name": "ElectroGiant_EV1",
+   "base": 26000085
+  },
+  "13000076": {
+   "name": "Phoenix_EV1",
+   "base": 26000087
+  },
+  "13000077": {
+   "name": "Fireball_EV1",
+   "base": 28000000
+  },
+  "13000078": {
+   "name": "Arrows_EV1",
+   "base": 28000001
+  },
+  "13000079": {
+   "name": "Rage_EV1",
+   "base": 28000002
+  },
+  "13000080": {
+   "name": "Rocket_EV1",
+   "base": 28000003
+  },
+  "13000081": {
+   "name": "GoblinBarrel_EV1",
+   "base": 28000004
+  },
+  "13000082": {
+   "name": "Freeze_EV1",
+   "base": 28000005
+  },
+  "13000083": {
+   "name": "Mirror_EV1",
+   "base": 28000006
+  },
+  "13000084": {
+   "name": "Lightning_EV1",
+   "base": 28000007
+  },
+  "13000085": {
+   "name": "Zap_EV1",
+   "base": 28000008
+  },
+  "13000086": {
+   "name": "Poison_EV1",
+   "base": 28000009
+  },
+  "13000087": {
+   "name": "Graveyard_EV1",
+   "base": 28000010
+  },
+  "13000088": {
+   "name": "Log_EV1",
+   "base": 28000011
+  },
+  "13000089": {
+   "name": "Tornado_EV1",
+   "base": 28000012
+  },
+  "13000090": {
+   "name": "Clone_EV1",
+   "base": 28000013
+  },
+  "13000091": {
+   "name": "Earthquake_EV1",
+   "base": 28000014
+  },
+  "13000092": {
+   "name": "BarbLog_EV1",
+   "base": 28000015
+  },
+  "13000093": {
+   "name": "Heal_EV1",
+   "base": 28000016
+  },
+  "13000094": {
+   "name": "Snowball_EV1",
+   "base": 28000017
+  },
+  "13000095": {
+   "name": "RoyalDelivery_EV1",
+   "base": 28000018
+  },
+  "13000096": {
+   "name": "Cannon_EV1",
+   "base": 27000000
+  },
+  "13000097": {
+   "name": "GoblinHut_EV1",
+   "base": 27000001
+  },
+  "13000098": {
+   "name": "Mortar_EV1",
+   "base": 27000002
+  },
+  "13000099": {
+   "name": "InfernoTower_EV1",
+   "base": 27000003
+  },
+  "13000100": {
+   "name": "BombTower_EV1",
+   "base": 27000004
+  },
+  "13000101": {
+   "name": "BarbarianHut_EV1",
+   "base": 27000005
+  },
+  "13000102": {
+   "name": "Tesla_EV1",
+   "base": 27000006
+  },
+  "13000103": {
+   "name": "Elixir Collector_EV1",
+   "base": 27000007
+  },
+  "13000104": {
+   "name": "Xbow_EV1",
+   "base": 27000008
+  },
+  "13000105": {
+   "name": "Tombstone_EV1",
+   "base": 27000009
+  },
+  "13000106": {
+   "name": "FirespiritHut_EV1",
+   "base": 27000010
+  },
+  "13000107": {
+   "name": "GoblinCage_EV1",
+   "base": 27000012
+  },
+  "13000108": {
+   "name": "GoblinDrill_EV1",
+   "base": 27000013
+  },
+  "203000000": {
+   "name": "Knight_hero",
+   "base": 26000000
+  },
+  "203000001": {
+   "name": "Archer_hero",
+   "base": 26000001
+  },
+  "203000002": {
+   "name": "Goblins_hero",
+   "base": 26000002
+  },
+  "203000003": {
+   "name": "Giant_hero",
+   "base": 26000003
+  },
+  "203000004": {
+   "name": "Pekka_hero",
+   "base": 26000004
+  },
+  "203000005": {
+   "name": "Minions_hero",
+   "base": 26000005
+  },
+  "203000006": {
+   "name": "Balloon_hero",
+   "base": 26000006
+  },
+  "203000007": {
+   "name": "Witch_hero",
+   "base": 26000007
+  },
+  "203000008": {
+   "name": "Barbarians_hero",
+   "base": 26000008
+  },
+  "203000009": {
+   "name": "Golem_hero",
+   "base": 26000009
+  },
+  "203000010": {
+   "name": "Skeletons_hero",
+   "base": 26000010
+  },
+  "203000011": {
+   "name": "Valkyrie_hero",
+   "base": 26000011
+  },
+  "203000012": {
+   "name": "SkeletonArmy_hero",
+   "base": 26000012
+  },
+  "203000013": {
+   "name": "Bomber_hero",
+   "base": 26000013
+  },
+  "203000014": {
+   "name": "Musketeer_hero",
+   "base": 26000014
+  },
+  "203000015": {
+   "name": "BabyDragon_hero",
+   "base": 26000015
+  },
+  "203000016": {
+   "name": "Prince_hero",
+   "base": 26000016
+  },
+  "203000017": {
+   "name": "Wizard_hero",
+   "base": 26000017
+  },
+  "203000018": {
+   "name": "MiniPekka_hero",
+   "base": 26000018
+  },
+  "203000019": {
+   "name": "SpearGoblins_hero",
+   "base": 26000019
+  },
+  "203000020": {
+   "name": "GiantSkeleton_hero",
+   "base": 26000020
+  },
+  "203000021": {
+   "name": "HogRider_hero",
+   "base": 26000021
+  },
+  "203000022": {
+   "name": "MinionHorde_hero",
+   "base": 26000022
+  },
+  "203000023": {
+   "name": "IceWizard_hero",
+   "base": 26000023
+  },
+  "203000024": {
+   "name": "RoyalGiant_hero",
+   "base": 26000024
+  },
+  "203000025": {
+   "name": "SkeletonWarriors_hero",
+   "base": 26000025
+  },
+  "203000026": {
+   "name": "Princess_hero",
+   "base": 26000026
+  },
+  "203000027": {
+   "name": "DarkPrince_hero",
+   "base": 26000027
+  },
+  "203000028": {
+   "name": "ThreeMusketeers_hero",
+   "base": 26000028
+  },
+  "203000029": {
+   "name": "LavaHound_hero",
+   "base": 26000029
+  },
+  "203000030": {
+   "name": "IceSpirits_hero",
+   "base": 26000030
+  },
+  "203000031": {
+   "name": "FireSpirits_hero",
+   "base": 26000031
+  },
+  "203000032": {
+   "name": "Miner_hero",
+   "base": 26000032
+  },
+  "203000033": {
+   "name": "ZapMachine_hero",
+   "base": 26000033
+  },
+  "203000034": {
+   "name": "Bowler_hero",
+   "base": 26000034
+  },
+  "203000035": {
+   "name": "RageBarbarian_hero",
+   "base": 26000035
+  },
+  "203000036": {
+   "name": "BattleRam_hero",
+   "base": 26000036
+  },
+  "203000037": {
+   "name": "InfernoDragon_hero",
+   "base": 26000037
+  },
+  "203000038": {
+   "name": "IceGolemite_hero",
+   "base": 26000038
+  },
+  "203000039": {
+   "name": "MegaMinion_hero",
+   "base": 26000039
+  },
+  "203000040": {
+   "name": "BlowdartGoblin_hero",
+   "base": 26000040
+  },
+  "203000041": {
+   "name": "GoblinGang_hero",
+   "base": 26000041
+  },
+  "203000042": {
+   "name": "ElectroWizard_hero",
+   "base": 26000042
+  },
+  "203000043": {
+   "name": "AngryBarbarians_hero",
+   "base": 26000043
+  },
+  "203000044": {
+   "name": "Hunter_hero",
+   "base": 26000044
+  },
+  "203000045": {
+   "name": "AxeMan_hero",
+   "base": 26000045
+  },
+  "203000046": {
+   "name": "Assassin_hero",
+   "base": 26000046
+  },
+  "203000047": {
+   "name": "RoyalRecruits_hero",
+   "base": 26000047
+  },
+  "203000048": {
+   "name": "DarkWitch_hero",
+   "base": 26000048
+  },
+  "203000049": {
+   "name": "Bats_hero",
+   "base": 26000049
+  },
+  "203000050": {
+   "name": "Ghost_hero",
+   "base": 26000050
+  },
+  "203000051": {
+   "name": "RamRider_hero",
+   "base": 26000051
+  },
+  "203000052": {
+   "name": "MiniSparkys_hero",
+   "base": 26000052
+  },
+  "203000053": {
+   "name": "Rascals_hero",
+   "base": 26000053
+  },
+  "203000054": {
+   "name": "MovingCannon_hero",
+   "base": 26000054
+  },
+  "203000055": {
+   "name": "MegaKnight_hero",
+   "base": 26000055
+  },
+  "203000056": {
+   "name": "SkeletonBalloon_hero",
+   "base": 26000056
+  },
+  "203000057": {
+   "name": "DartBarrell_hero",
+   "base": 26000057
+  },
+  "203000058": {
+   "name": "Wallbreakers_hero",
+   "base": 26000058
+  },
+  "203000059": {
+   "name": "RoyalHogs_hero",
+   "base": 26000059
+  },
+  "203000060": {
+   "name": "GoblinGiant_hero",
+   "base": 26000060
+  },
+  "203000061": {
+   "name": "Fisherman_hero",
+   "base": 26000061
+  },
+  "203000062": {
+   "name": "EliteArcher_hero",
+   "base": 26000062
+  },
+  "203000063": {
+   "name": "ElectroDragon_hero",
+   "base": 26000063
+  },
+  "203000064": {
+   "name": "Firecracker_hero",
+   "base": 26000064
+  },
+  "203000065": {
+   "name": "ElixirGolem_hero",
+   "base": 26000067
+  },
+  "203000066": {
+   "name": "BattleHealer_hero",
+   "base": 26000068
+  },
+  "203000067": {
+   "name": "SkeletonDragons_hero",
+   "base": 26000080
+  },
+  "203000068": {
+   "name": "WitchMother_hero",
+   "base": 26000083
+  },
+  "203000069": {
+   "name": "ElectroSpirit_hero",
+   "base": 26000084
+  },
+  "203000070": {
+   "name": "ElectroGiant_hero",
+   "base": 26000085
+  },
+  "203000071": {
+   "name": "Phoenix_hero",
+   "base": 26000087
+  },
+  "203000072": {
+   "name": "GoblinDemolisher_hero",
+   "base": 26000095
+  },
+  "203000073": {
+   "name": "GoblinMachine_hero",
+   "base": 26000096
+  },
+  "203000074": {
+   "name": "SuspiciousBush_hero",
+   "base": 26000097
+  },
+  "203000075": {
+   "name": "GiantBuffer_hero",
+   "base": 26000101
+  },
+  "203000076": {
+   "name": "Berserker_hero",
+   "base": 26000102
+  },
+  "203000077": {
+   "name": "Heal_hero",
+   "base": 28000016
+  },
+  "203000078": {
+   "name": "MergeMaiden_hero",
+   "base": 28000025
+  },
+  "203000079": {
+   "name": "Cannon_hero",
+   "base": 27000000
+  },
+  "203000080": {
+   "name": "GoblinHut_hero",
+   "base": 27000001
+  },
+  "203000081": {
+   "name": "Mortar_hero",
+   "base": 27000002
+  },
+  "203000082": {
+   "name": "InfernoTower_hero",
+   "base": 27000003
+  },
+  "203000083": {
+   "name": "BombTower_hero",
+   "base": 27000004
+  },
+  "203000084": {
+   "name": "BarbarianHut_hero",
+   "base": 27000005
+  },
+  "203000085": {
+   "name": "Tesla_hero",
+   "base": 27000006
+  },
+  "203000086": {
+   "name": "Elixir Collector_hero",
+   "base": 27000007
+  },
+  "203000087": {
+   "name": "Xbow_hero",
+   "base": 27000008
+  },
+  "203000088": {
+   "name": "Tombstone_hero",
+   "base": 27000009
+  },
+  "203000089": {
+   "name": "FirespiritHut_hero",
+   "base": 27000010
+  },
+  "203000090": {
+   "name": "GoblinCage_hero",
+   "base": 27000012
+  },
+  "203000091": {
+   "name": "GoblinDrill_hero",
+   "base": 27000013
+  },
+  "203000092": {
+   "name": "Fireball_hero",
+   "base": 28000000
+  },
+  "203000093": {
+   "name": "Arrows_hero",
+   "base": 28000001
+  },
+  "203000094": {
+   "name": "Rage_hero",
+   "base": 28000002
+  },
+  "203000095": {
+   "name": "Rocket_hero",
+   "base": 28000003
+  },
+  "203000096": {
+   "name": "GoblinBarrel_hero",
+   "base": 28000004
+  },
+  "203000097": {
+   "name": "Freeze_hero",
+   "base": 28000005
+  },
+  "203000098": {
+   "name": "Mirror_hero",
+   "base": 28000006
+  },
+  "203000099": {
+   "name": "Lightning_hero",
+   "base": 28000007
+  },
+  "203000100": {
+   "name": "Zap_hero",
+   "base": 28000008
+  },
+  "203000101": {
+   "name": "Poison_hero",
+   "base": 28000009
+  },
+  "203000102": {
+   "name": "Graveyard_hero",
+   "base": 28000010
+  },
+  "203000103": {
+   "name": "Log_hero",
+   "base": 28000011
+  },
+  "203000104": {
+   "name": "Tornado_hero",
+   "base": 28000012
+  },
+  "203000105": {
+   "name": "Clone_hero",
+   "base": 28000013
+  },
+  "203000106": {
+   "name": "Earthquake_hero",
+   "base": 28000014
+  },
+  "203000107": {
+   "name": "BarbLog_hero",
+   "base": 28000015
+  },
+  "203000108": {
+   "name": "Snowball_hero",
+   "base": 28000017
+  },
+  "203000109": {
+   "name": "RoyalDelivery_hero",
+   "base": 28000018
+  },
+  "203000110": {
+   "name": "DarkMagic_hero",
+   "base": 28000023
+  },
+  "203000111": {
+   "name": "GoblinCurse_hero",
+   "base": 28000024
+  },
+  "203000112": {
+   "name": "Vines_hero",
+   "base": 28000026
+  }
+ },
+ "cards": {
+  "26000066": "SuperWitch",
+  "26000070": "SuperLavaHound",
+  "26000071": "SuperEliteArcher",
+  "26000073": "SuperHogRider",
+  "26000075": "SuperIceGolemite",
+  "26000076": "CHAR_DISABLED_1",
+  "26000078": "SuperArcher",
+  "26000079": "RoyalRecruits_Chess",
+  "26000081": "SuperHogRiderTerry",
+  "26000082": "SuperMiniPekka",
+  "26000086": "PrinceBuff",
+  "26000088": "CHAR_DISABLED_3",
+  "26000089": "CHAR_DISABLED_4",
+  "26000090": "CHAR_DISABLED_5",
+  "26000091": "CHAR_DISABLED_6",
+  "26000092": "CHAR_DISABLED_7",
+  "26000094": "TriWizards",
+  "26000098": "SuperKnight",
+  "26000100": "SkeletonWarriors_SpookyChess",
+  "26000104": "MergeMaiden_Normal",
+  "26000105": "MergeMaiden_Mounted",
+  "27000011": "BarbarianLauncher",
+  "27000014": "GoblinPartyHut",
+  "27000015": "DarkElixir_Bottle",
+  "27000016": "ElixirBarrel",
+  "27000017": "GoblinRocketSilo",
+  "28000019": "GlobalClone",
+  "28000020": "GoblinPartyRocket",
+  "28000021": "WarmSpell",
+  "28000022": "GlobalLightning"
+ }
+}
