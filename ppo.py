@@ -578,7 +578,8 @@ def learn(args, settings):
 
     def opponents():
         """{name: (checkpoint, PFSP weight)} over opponent_paths."""
-        return matchmaking.weights(matchmaking.opponent_paths(out, init, s), results, getattr(s, 'fixed_opponents', None))
+        fixed = control('fixed-opponents') or getattr(s, 'fixed_opponents', None)
+        return matchmaking.weights(matchmaking.opponent_paths(out, init, s), results, fixed)
 
     key = [os.urandom(16).hex()]
     if world > 1:
@@ -715,6 +716,8 @@ def learn(args, settings):
                 expired_cards_per_game=round(sum(t.get('expired_cards', 0) for t in times)
                                              / max(1, sum(t.get('games', 0) for t in times)), 3),
                 score={n: round(float(np.mean(results[n])), 3) for n in sorted(results) if results[n]},
+                **(dict(target_deck_fraction=float(np.mean([r['target_deck'] for r in finished])))
+                   if finished and 'target_deck' in finished[0] else {}),
                 ticks=float(np.mean([row['tick'] for row in finished] or [0])),
                 **(dict(deck_score=float(np.mean([row['deck_score'] for row in finished if 'deck' in row] or [0])),
                         hard_decks=len(matchmaking.hard_decks(decks.scores))) if decks is not None else {}),
@@ -723,6 +726,10 @@ def learn(args, settings):
             log.write(json.dumps(row) + '\n')
             log.flush()
             print(json.dumps(row), flush=True)
+    # Keep the inbox serving frozen evaluation games until the resident worker
+    # hands this allocation to the next stage. No Slurm allocation is released.
+    while getattr(s, 'hold_after_updates', False):
+        time.sleep(2)
     if world > 1:
         dist.destroy_process_group()
 
@@ -751,6 +758,11 @@ def main():
     p.add_argument('--opponent-affinity', action=argparse.BooleanOptionalAction, default=True,
                    help='route already-sampled opponents to balanced server cohorts')
     args = parser.parse_args()
+    # A previously queued curriculum job can enter its allocation keeper without
+    # cancelling/requeuing it. Child training commands bypass this bootstrap.
+    if args.command == 'learn':
+        from cr.allocation_bootstrap import enter
+        enter(args.out)
     if args.command == 'act':
         return actors.act(args)
     args.out.mkdir(parents=True, exist_ok=True)

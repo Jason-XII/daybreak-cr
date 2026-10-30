@@ -459,6 +459,45 @@ def test_a_general_run_aims_opponent_decks_at_its_learning_seat_and_keeps_its_ow
     assert [matchmaking.deck_key(d) for d in pair['decks']] == ['5-6', '9-10']
 
 
+def test_specialist_champion_mirror_fixes_both_decks_and_towers_only_in_head_to_head(tmp_path):
+    rng = random.Random(12)
+    pair = dict(decks=[[dict(d=1)], [dict(d=2)]], sc=[[dict(d=3)], [dict(d=4)]])
+    settings = dict(deck=[dict(d=10, el=2), dict(d=11, el=1)], deck_sc=[dict(d=159000000)])
+    models = [('champion', '/b'), ('challenger', '/a')]
+    judged = dict(a=['challenger', '/a'], b=['champion', '/b'], mirror_deck=True)
+    result, seat = matchmaking.seat_decks(pair, settings, models, judged, None, tmp_path, rng)
+    assert seat == 1
+    assert all(sorted(d['d'] for d in deck) == [10, 11] for deck in result['decks'])
+    assert result['sc'] == [settings['deck_sc'], settings['deck_sc']]
+    judged.pop('mirror_deck')
+    result, _ = matchmaking.seat_decks(pair, settings, models, judged, None, tmp_path, rng)
+    assert result['decks'][0] == pair['decks'][0] and result['sc'][0] == pair['sc'][0]
+    assert sorted(d['d'] for d in result['decks'][1]) == [10, 11]
+    assert pair['decks'] == [[dict(d=1)], [dict(d=2)]], 'do not mutate the shared pool'
+
+
+def test_curriculum_decks_are_independent_and_target_fraction_is_not_diluted(tmp_path):
+    pool = [dict(decks=[[dict(d=1)], [dict(d=2)]], sc=[[], []]),
+            dict(decks=[[dict(d=3)], [dict(d=1)]], sc=[[], []])]
+    decks, rng = matchmaking.Decks(pool), random.Random(1029)
+    settings = dict(deck=[dict(d=1)], deck_frac=.6, independent_decks=True, deck_sc=[dict(d=99)])
+    counts, opponents, pairs = [], [], set()
+    for _ in range(4000):
+        pair, seat = matchmaking.seat_decks(pool[0], settings, [('base','/b'),('current',None)],
+                                          None, decks, tmp_path, rng)
+        ours, theirs = (pair['decks'][o][0]['d'] for o in (seat,1-seat))
+        counts.append(ours == 1); opponents.append(theirs == 1); pairs.add((ours,theirs))
+        assert pair['sc'] == [settings['deck_sc']]*2
+    assert .57 < np.mean(counts) < .63
+    assert .47 < np.mean(opponents) < .53, 'opponents retain human appearance weights'
+    assert (2,3) in pairs and (3,2) in pairs, 'draws can cross original replay pairings'
+    assert pool[0]['decks'] == [[dict(d=1)], [dict(d=2)]]
+    settings['deck_frac'] = 0
+    for _ in range(50):
+        pair,seat=matchmaking.seat_decks(pool[0],settings,[('current',None),('base','/b')],None,decks,tmp_path,rng)
+        assert pair['decks'][seat][0]['d'] != 1
+
+
 def test_the_imitation_step_learns_from_a_whole_dataset_winning_views_only(tmp_path, monkeypatch):
     root = dataset(tmp_path / 'data', monkeypatch)
     seen = []

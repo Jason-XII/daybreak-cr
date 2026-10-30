@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from cr import matchmaking, observation as C, policy, search
+from cr.paired_evaluation import AssignedEvaluations, models as paired_models
 from cr.engine import Engine, Game, margin, potential, raise_thread_limit, tower_hp
 
 OVERFLOW_PENALTY = 0.002
@@ -113,6 +114,7 @@ def collector(index, run, addresses, key, affinity=False):
     rng = random.Random(f'{socket.gethostname()}-{os.getpid()}-{time.time_ns()}')
     s = endpoint(run)['settings']
     pool = json.loads(Path(s['pool']).read_text())
+    eval_pool = json.loads(Path(s['eval_pool']).read_text()) if s.get('eval_pool') else pool
     vocab = C.Vocab.load(run / 'vocab.json')
     legal = C.cached_legal()
     engine = Engine(s['engine'], lib=s.get('engine_lib'), assets=s.get('engine_assets'))
@@ -120,11 +122,17 @@ def collector(index, run, addresses, key, affinity=False):
     _, opponents = link.exchange([], [], {})
     server, address, decks = None, None, None
     timing = defaultdict(float)
+    paired = AssignedEvaluations(run, index)
     while True:
         # every game: a learner (re)started after this collector may have new settings (an actor that starts with its
         # learner can read the previous endpoint.json)
         s = endpoint(run)['settings']
-        models, judged = matchmaking.pick_models(opponents, matchmaking.evaluation(run) if s.get('eval_frac') else [], s, rng)
+        task = paired.next(rng)
+        if task:
+            models = paired_models(task)
+            judged = dict(id=f"paired-{task['id']}", a=['paired-candidate',task['candidate']])
+        else:
+            models, judged = matchmaking.pick_models(opponents, matchmaking.evaluation(run) if s.get('eval_frac') else [], s, rng)
         opponent = next((name for name, _ in models if name != 'current'), 'current')
         sid = rng.randrange(len(addresses)) if judged else \
             matchmaking.route_collector(opponent, opponents, rng, len(addresses)) if affinity else index % len(addresses)
@@ -133,17 +141,18 @@ def collector(index, run, addresses, key, affinity=False):
                 server.close()
             address = addresses[sid]
             server = Client(address, authkey=key)
-        pair = rng.choice(pool)
-        if s.get('deck') or s.get('deck_mix'):  # a specialist's deck and/or opponent decks aimed at the learning seat
-            decks = decks or (matchmaking.Decks(pool) if s.get('deck_mix') else None)
+        pair = task['pair'] if task else rng.choice(eval_pool if judged else pool)
+        if not task and (s.get('deck') or s.get('deck_mix') or s.get('independent_decks')):
+            decks = decks or (matchmaking.Decks(pool) if s.get('deck_mix') or s.get('independent_decks') else None)
             pair, special = matchmaking.seat_decks(pair, s, models, judged, decks, run, rng)
         engine.overlap = [bool(s.get('overlap'))] * 2  # the run's rule for every seat (Game.views() adds the mask)
-        game = Game(engine, pair, rng.randrange(1 << 30), {0: vocab, 1: vocab}, legal)
+        game = Game(engine, pair, task['seed'] if task else rng.randrange(1 << 30), {0: vocab, 1: vocab}, legal)
         seats = {o: Seat() for o in (0, 1) if models[o][0] == 'current'}
         searching = bool(seats) and not judged and rng.random() < s.get('search_frac', 0.0)  # label this game's tiles
         start = tower_hp(game.state)
         phi = [potential(game.state, start, o) for o in (0, 1)]
         version, shape = None, None
+        refused = [0, 0]
         while True:
             t0 = time.perf_counter()
             state = game.state
@@ -182,7 +191,9 @@ def collector(index, run, addresses, key, affinity=False):
                     enemy_on_board = any(e.owner != o and e.card != -1 for e in state.entities)
                     seat.reward.append(-OVERFLOW_PENALTY * (state.players[o].elixir >= 100000) * enemy_on_board)
                 choices[o] = policy.decode(a, o)
-            _, transition = game.step(choices)
+            submitted, transition = game.step(choices)
+            for action, accepted in zip(submitted, transition.executed):
+                refused[action.owner] += not accepted
             timing['refused'] += transition.executed.count(False)  # rare: refused plays are masked out (policy.playable)
             state = game.state
             ended = game.over
@@ -199,6 +210,8 @@ def collector(index, run, addresses, key, affinity=False):
         if judged:  # A's score: 1 win, 0.5 draw, 0 loss
             a = 0 if models[0][0] == judged['a'][0] else 1
             score = 0.5 if state.result not in (0, 1) else float(state.result == a)
+            if task:
+                paired.finish(task, score, state, refused)
             _, opponents = link.exchange([], [dict(eval=judged['id'], score=score, tick=state.tick)],
                                          dict(timing, games=1))
             timing = defaultdict(float)
@@ -216,6 +229,9 @@ def collector(index, run, addresses, key, affinity=False):
         learner = min(seats)
         result = dict(opponent=models[1 - learner][0] if len(seats) == 1 else 'self', tick=state.tick,
                       outcome=0.0 if state.result not in (0, 1) else 1.0 if state.result == learner else -1.0)
+        if 'deck_frac' in s:
+            result['target_deck'] = bool(s.get('deck')) and \
+                matchmaking.deck_key(pair['decks'][learner]) == matchmaking.deck_key(s['deck'])
         if s.get('deck') or s.get('deck_mix'):  # the learning seat's score against this deck (matchmaking.DeckScores)
             result.update(deck=matchmaking.deck_key(pair['decks'][1 - special]),
                           deck_score=0.5 if state.result not in (0, 1) else float(state.result == special))

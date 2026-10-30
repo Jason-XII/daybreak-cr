@@ -7,6 +7,16 @@ import pytest
 import loop
 
 
+def test_specialist_mirror_applies_to_champion_match_not_benchmarks(tmp_path):
+    (tmp_path / 'loop.json').write_text(json.dumps(dict(
+        jobs={}, champion=dict(name='base', path='/base.pt'), benchmark={'bench': '/bench.pt'},
+        champion_mirror=True)))
+    run = loop.Loop(tmp_path)
+    matches = run.matches('v000020', '/new.pt')
+    assert matches[0]['mirror_deck'] is True
+    assert all('mirror_deck' not in match for match in matches[1:])
+
+
 def test_loop_promotes_rolls_back_and_stops(tmp_path, monkeypatch):
     monkeypatch.setattr(loop.Loop, 'jobs', lambda self: {})
     for d in ('pool', 'ckpt', 'league'):

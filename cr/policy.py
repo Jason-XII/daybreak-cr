@@ -287,7 +287,7 @@ class Policy(nn.Module):
 
 # ---- playing -------------------------------------------------------------------------------------------------------------
 CARD = 4  # actions: WAIT, PLAY (never sampled as such), ABILITY1, ABILITY2, then CARD + hand slot * CELLS + cell
-ABILITY_EXPLORE = 0.01  # self-play: P(ability) >= this while one is ready (old PPO stopped pressing it at all)
+ABILITY_EXPLORE = 0.0  # 28 Oct: off (was 0.01); PPO learned to leave presses to the random floor, which deployment lacks
 
 
 def load(checkpoint, device='cpu'):

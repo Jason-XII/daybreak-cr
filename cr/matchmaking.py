@@ -109,6 +109,20 @@ class Decks:
             for side, deck in enumerate(pair['decks']):
                 self.seats[deck_key(deck)].append((i, side))
         self.focus = sorted(self.seats, key=lambda k: (-len(self.seats[k]), k))[:FOCUS]
+        self.excluding = {}
+
+    def draw(self, rng, exclude=None):
+        """One independent human deck appearance, optionally excluding a card set."""
+        if exclude is None:
+            i = rng.randrange(len(self.pool)); side = rng.randrange(2)
+        else:
+            if exclude not in self.excluding:
+                self.excluding[exclude] = [(i, o) for i, pair in enumerate(self.pool)
+                                          for o, deck in enumerate(pair['decks']) if deck_key(deck) != exclude]
+            if not self.excluding[exclude]:
+                raise ValueError('no broad decks remain after excluding the target')
+            i, side = rng.choice(self.excluding[exclude])
+        return rng.sample(self.pool[i]['decks'][side], len(self.pool[i]['decks'][side]))
 
     def pick(self, pair, side, mix, hard, rng):
         """-> (the pair to play, its deck on `side` replaced as drawn, or `pair` as it is)."""
@@ -131,11 +145,29 @@ def seat_decks(pair, s, models, judged, decks, run, rng):
     own; a drawn deck brings its own pair, so without "deck" the learning seat plays the human deck that met it)
     -> (the pair, the seat they are aimed at)."""
     special = deck_seat(models, judged, rng)
-    deck = s.get('deck') and rng.sample(s['deck'], len(s['deck']))  # in a random order, as humans' decks come
+    fraction = s.get('deck_frac', 1.0)
+    if not 0 <= fraction <= 1:
+        raise ValueError('deck_frac must be between zero and one')
+    if s.get('independent_decks') and not judged:
+        # Draw player decks independently, preserving each human appearance's weight.
+        # The broad portion excludes the target card set so deck_frac is its actual share.
+        target = deck_key(s['deck']) if s.get('deck') else None
+        left = decks.draw(rng, exclude=target)
+        right = decks.draw(rng)
+        pair = dict(pair, decks=[left if o == special else right for o in (0, 1)])
+        if s.get('deck_sc'):
+            pair['sc'] = [s['deck_sc'], s['deck_sc']]
+    use_target = bool(s.get('deck')) and (judged or fraction == 1 or rng.random() < fraction)
+    deck = rng.sample(s['deck'], len(s['deck'])) if use_target else None
     if s.get('deck_mix') and not judged:  # gates keep the pool's decks
         pair = decks.pick(pair, 1 - special, s['deck_mix'], read_hard(run), rng)
     if deck:
-        pair = dict(pair, decks=[deck if o == special else d for o, d in enumerate(pair['decks'])])
+        mirror = bool(judged and judged.get('mirror_deck'))
+        pair = dict(pair, decks=[rng.sample(deck, len(deck)) if mirror else deck if o == special else d
+                                for o, d in enumerate(pair['decks'])])
+        if s.get('deck_sc'):
+            pair['sc'] = [s['deck_sc'] if mirror or o == special else sc
+                          for o, sc in enumerate(pair['sc'])]
     return pair, special
 
 

@@ -158,6 +158,8 @@ class Loop:
         champion's own benchmark if it was never measured (the initial champion)."""
         c, cfg = self.state['champion'], self.cfg
         out = [dict(id=f'{name}:{c["name"]}', a=[name, path], b=[c['name'], c['path']], games=cfg['champion_games'])]
+        if cfg.get('champion_mirror'):
+            out[0]['mirror_deck'] = True
         for b, bpath in cfg['benchmark'].items():
             out.append(dict(id=f'{name}:{b}', a=[name, path], b=[b, bpath], games=cfg['bench_games']))
             if c['name'] not in self.state['bench']:

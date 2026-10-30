@@ -965,6 +965,32 @@ matchmaking), in `~/cr-ppo/runs/hog26`:
 
 Start (update 1, 1,024 games): Hog-playing v240 scores 33% against v240 on pool decks and 60% against the IL model.
 
+### Hog specialist from gen-r6e v140 (28 October)
+
+The user selected v140 as the policy initialization and requested stopping general PPO. gen-r6e
+stopped at v337 on 28 October at 21:34, preserving champion v320 and every retained checkpoint.
+The new run is `~/cr-ppo/runs/hog26-r6e140-1028`, frozen source `src-hog26-r6e140-1028`.
+The archived v140 contains policy weights only: the new critic comes from gen-r6e's saved v320,
+with fresh policy/critic optimizers and three critic-only updates before policy learning.
+
+The deck is Hog Rider, hero Musketeer, evolved Cannon, evolved Skeletons, Fireball, Log,
+Ice Golem and Ice Spirit, with Princess Tower. Cards and towers use displayed level 11;
+native card levels subtract each rarity's first level, as in `convert.prepare`.
+Training uses 36,000 pool pairs, with 4,000 separate evaluation pairs. The light expert BC
+regularizer uses a seeded 60,000-view scan of the current IL data: 923 views match the exact
+hero/evolution setup, including 500 winning non-validation views. The index retains the current
+schema and ability labels at tap time. Native preflight verified observations, policy inference
+and hero Musketeer's three-elixir ability.
+
+Opponent selection retains fixed IL-r6 and general-v140 shares plus historical PFSP; deck sampling
+uses 30% common, 30% hard and 40% broad pool (the hard share falls back to broad until measured).
+Search, self-play and the ability exploration floor are off. Gates occur every 20 updates, using
+800 head-to-head games and a 53% promotion bar plus the existing benchmark regression guard.
+`champion_mirror` marks only the challenger/champion match: both policies get the same Hog deck
+and Princess Tower. Four benchmark models retain diverse opposing decks from the evaluation pool.
+These are randomized games, not a new seed-paired confidence-interval gate implementation.
+Stop after 10 failed gates or 48 hours. Validation: 85 tests passed, 3 skipped; native preflight passed.
+
 ## 15. What the model gets that a human doesn't, and decision timing (25 October)
 
 **The opponent's plays before they land.** The model sees an opponent play from 13 ticks before it lands
@@ -979,3 +1005,63 @@ opponent's exact elixir, when each of their cards is back in hand, exact hp and 
 itself, A per tick, B every 5 ticks. Each tick decided as the 5-tick decision (the LSTM commits every 5 ticks, P(play)
 per tick = 1 − P(wait)^(1/5)): **A 50.5 ± 2.5%** over 400, no gain. The policy as is, every tick: 37.5 ± 2.7% over 325
 (its memory steps 5× too often; repeated ability taps refused). The 250 ms decision step is not what limits it.
+
+## 16. Common-deck curriculum (29 October)
+
+`experiments/deck_curriculum.py RUN` is a restartable Slurm supervisor, with a 24-hour limit.
+The initial run is `~/cr-ppo/runs/curriculum-r6e320-1029`, from general gen-r6e v320 policy
+and critic, with fresh optimizers and three critic-only warm-ups. The paused Giant Skeleton/Ram
+and Giant/Graveyard branches remain separate. No training code is hot-edited in deployed snapshots.
+
+The first target is hero Goblins, evolved Valkyrie/Executioner, Hog, Ice Spirit, Rocket, Log,
+Tornado. The full October human count found 161,986 replays / 323,972 player-deck appearances;
+28 unordered eight-card sets meet 0.5% usage, covering 25.8% of appearances. Forms are the modal
+human configuration for each card set. The v320 self-play panel used 20 games per distinct pair,
+ten seeds and both seats, 7,560 total. Results: `analysis/common-decks-v320-20261029/`.
+
+Training uses `deck_frac=.6` and `independent_decks=true`: 60% target, 40% independently drawn
+other human decks, excluding the target card set from that broad portion. Opponents are independent
+draws from the full pool, without focus/hard reweighting. All cards/towers are level16 / Princess.
+`target_deck_fraction` records the realized share. Opponent policies are 50% frozen v320 and
+50% the latest accepted curriculum champion. Learner temperature1, frozen/deployment temperature.05,
+overlap enabled, ability exploration0, no search. PPO settings otherwise match the preceding
+specialists. Human BC coefficient.05 uses broad examples plus exact-form target winners when
+at least32 exist; target entries comprise20% of index draws, not necessarily20% of accepted BC
+chunks because losing broad views are resampled. The first target has123 winning exact views.
+
+Each stage runs100 policy updates (first stage ends at v103 including warm-ups), with evaluations
+at20/40/60/80/100 policy updates. The candidate is never rolled back at intermediate regressions.
+Each target evaluation has540 candidate and540 stage-start-policy games against fixed v320 on
+the same27 opponent decks/seeds/seats. Another1,000 paired-seat games compare candidate against
+the stage-start accepted champion on independent sampled full-pool decks. Both play at.05.
+Point-estimate general retention threshold47%; paired-seed bootstrap intervals are reported.
+Interim candidates can become the champion/KL anchor if the target improves and general score
+is at least47%. Their checkpoints and all20-update milestones are retained.
+
+After100: general score below47% triggers100 broad-deck recovery updates from the final candidate,
+evaluated against the last accepted champion, not against the degraded candidate. Success triggers
+a fresh7,560-game self-play reranking using the accepted model, then the new weakest deck.
+No target improvement, or unsuccessful recovery, preserves the candidate and resumes the two
+previously authorized paused specialists. `alerts.json`, `events.log`, `report.md` and per-stage
+evaluation artifacts record every decision; these are local reports, not push notifications.
+Slurm jobs retry up to five times; three consecutive controller exceptions trigger that fallback.
+At the24-hour limit the controller cancels its jobs and preserves all results.
+
+### 30 October correction: retain allocations and evaluate inline
+
+The first curriculum controller incorrectly cancelled all training jobs for each arena, losing
+its A100 allocation to other users. Restored behavior: the same actors consume deterministic
+paired tasks alongside learning (50% evaluation while a gate is active), with the same target
+and broad panels. Frozen games write durable per-collector result files; no Slurm arena or
+summary job is submitted. Summaries run as short auxiliary processes in an existing actor job.
+The learner runs continuously to the100-policy-update stage boundary; there it keeps its inbox
+alive for final evaluations. `allocation_worker.py` retains each Slurm job while child processes
+change at stage/recovery handoffs. Queued allocations are not cancelled as stalled learners.
+A minimal bootstrap preserved the existing A100 job120685 queue position. New source snapshot
+`src-curriculum-inline-1030`; no live model/checkpoint was changed by this restore.
+Validation:35 tests passed,1 skipped; native test performed2 PPO updates and4 paired inline games
+while retaining the same job and an active learner inbox at the update cap (0 refused actions).
+At23:53 only1 healthy A100 was free;21/22 were retested and still lacked the home/engine mount.
+Competition quotas are4A100/16CPU and4RTX/16CPU; Students medium2GPU/24CPU. Free physical RTX
+capacity does not increase those quotas; moving the four-RTX allocation to learning is an
+alternative, with the two Students GPUs supplying actors, subject to a full-batch VRAM check.
