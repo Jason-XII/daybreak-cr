@@ -1,18 +1,22 @@
 """Card and unit stats from the game's own logic tables (22 Oct): what each card and each unit on the board does,
 for the network's card inputs (it only knew ids and costs).
 
-    python card_stats.py CSV_LOGIC VOCAB.json REPLAY_CARDS.json UNIT_STATE_TABLES.json OUT.json
+    python card_stats.py CSV_LOGIC VOCAB.json REPLAY_CARDS.json UNIT_STATE_TABLES.json OUT.json [FORM_CARDS.json]
 
 CSV_LOGIC: the build's data/assets/csv_logic (compressed CSV and TOML, decoded here); UNIT_STATE_TABLES: the export that
 names the units' data ids (clapha-engine crx/export_tables.py; e.g. ~/cr-live/models/unit_state_tables_150535029.json).
 
 OUT: {'fields': [...], 'stats': {vocab id: [values]}, 'missing': [...]} for card ids (26/27/28: the summoned unit, or
-the spell's projectile / area effect) and unit data ids (what objects report, named by the unit-state tables).
+the spell's projectile / area effect), evolution and hero card ids (what an evolved / hero unit reports: its base card's
+stats, FORM_CARDS = assets/form_cards.json by default, tools/form_cards.py) and unit data ids (what objects report,
+named by the unit-state tables). Card names are matched ignoring case, spaces and '_' (31 Oct: 'Minion Giant' never
+matched the data's 'MinionGiant', so it had no row).
 Values are at the tables' base level and roughly scaled to [0, 1]."""
 import csv, io, json, lzma, math, sys, tomllib
 from pathlib import Path
 
 ROOT, VOCAB, CARDS, UNITS, OUT = map(Path, sys.argv[1:6])
+FORMS = Path(sys.argv[6]) if len(sys.argv) > 6 else Path(__file__).resolve().parents[1] / 'assets' / 'form_cards.json'
 
 
 def raw(p):
@@ -46,6 +50,8 @@ for kind, files in TABLES.items():
         if (ROOT / f).exists():
             for name, row in csv_table(ROOT / f).items():
                 T[kind].setdefault(name, {}).update(row)
+EXT = {}  # [EXT.Name] Base = 'Other': Other's row with these fields changed (31 Oct: evolved / hero units such as
+#           BarrelGoblin, SkeletonArmy_EV1_Soldier, IceWizardHeroFloatingCube are only EXT rows; they had no stats)
 for p in sorted(ROOT.rglob('*.toml')):
     try:
         t = tomllib.loads(raw(p).decode('utf-8', 'replace'))
@@ -56,6 +62,24 @@ for p in sorted(ROOT.rglob('*.toml')):
             for name, e in entries.items():
                 if isinstance(e, dict):
                     T[TOML_KINDS[kind]].setdefault(name, {}).update({k: v for k, v in e.items() if not isinstance(v, (dict, list))})
+        elif kind == 'EXT' and isinstance(entries, dict):
+            for name, e in entries.items():
+                if isinstance(e, dict) and isinstance(e.get('Base'), str):
+                    EXT.setdefault(name, {}).update(e)
+
+for _ in range(8):  # an EXT row may extend another EXT row: resolve until nothing changes
+    grew = False
+    for name, e in EXT.items():
+        prefix, _, short = e['Base'].partition('.')          # 'CHARACTER.Goblin' (or a bare name)
+        for kind in ('CHARACTER', 'BUILDING', 'PROJECTILE', 'AEO'):
+            if short and TOML_KINDS.get(prefix, prefix) != kind:
+                continue
+            base = T[kind].get(short or e['Base'])
+            if base is not None and name not in T[kind]:
+                T[kind][name] = {**base, **{k: v for k, v in e.items() if k != 'Base' and not isinstance(v, (dict, list))}}
+                grew = True
+    if not grew:
+        break
 
 
 def num(e, k, default=0.0):
@@ -105,7 +129,7 @@ def entity(name):
     """A unit's values; an evolution or hero form not in the tables takes its base unit's (ponytail: evolutions differ
     in a few stats; read their own tables if the input proves useful)."""
     for n in (name, name.replace('_EV1', '').replace('_ev1', ''), name.replace('Hero', ''),
-              name.split('_rework_')[-1]):
+              name.split('_rework_')[-1], name.split('_EV1')[0]):          # GoblinCage_EV1_TEMPNAME -> GoblinCage
         for kind, building in (('CHARACTER', False), ('BUILDING', True)):
             real = LOWER[kind].get(n.lower().replace('_', '')) or LOWER[kind].get(n.lower())
             if real:
@@ -113,8 +137,11 @@ def entity(name):
     return None
 
 
+SPELL_NAMES = {n.lower().replace(' ', '').replace('_', ''): n for n in T['SPELL']}
+
+
 def card_values(name):
-    s = T['SPELL'].get(name)
+    s = T['SPELL'].get(name) or T['SPELL'].get(SPELL_NAMES.get(name.lower().replace(' ', '').replace('_', ''), ''))
     if s is None:
         return None
     count = num(s, 'SummonNumber', 1.0) if s.get('SummonCharacter') else 0.0
@@ -133,6 +160,9 @@ vocab = json.loads(VOCAB.read_text())
 cards = json.loads(CARDS.read_text())['cards']
 units = json.loads(UNITS.read_text())['characters']
 hero_of = {u: int(c) for c, u in json.loads(CARDS.read_text())['hero_units'].items()}  # hero unit id -> its card
+forms_file = json.loads(FORMS.read_text()) if FORMS.exists() else {}
+form_of = {int(i): f['base'] for i, f in forms_file.get('forms', {}).items()}
+engine_cards = {int(i): n for i, n in forms_file.get('cards', {}).items()}  # card rows replay_cards.json lacks
 stats, missing = {}, []
 for i in vocab:
     cls = i // 1000000
@@ -141,6 +171,12 @@ for i in vocab:
         v = card_values(name)
     elif cls in (26, 27, 28) and str(i) in cards:
         name = cards[str(i)]['name']
+        v = card_values(name)
+    elif i in form_of and str(form_of[i]) in cards:  # an evolution / hero card: its base card's stats
+        name = cards[str(form_of[i])]['name']
+        v = card_values(name)
+    elif i in engine_cards:                          # a card row by its data name (e.g. MergeMaiden_Normal)
+        name = engine_cards[i]
         v = card_values(name)
     elif str(i) in units:
         name = units[str(i)]['name']
