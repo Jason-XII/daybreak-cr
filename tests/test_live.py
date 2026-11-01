@@ -48,6 +48,14 @@ def test_the_opponents_plays_land_from_the_queue_without_their_hand():
     assert [(t, c['card_id'], c['seen']) for t, c in landed] == [(121, 26, 110)] and plays.update(hidden(124)) == landed
 
 
+
+def test_a_card_reserved_after_our_ability_press():
+    # 1 Nov live crash: the pending press (no card id) was matched against the next card reservation
+    press = (130, dict(kind='ability', owner=0, controller=1, tap=120))
+    card = (140, dict(owner=0, card_id=26, x=9000, y=8000, tap=121))
+    out = play.LivePlays(0).commands(reservations=[press, card], tick=121)
+    assert [c.get('card_id') for _, c in out] == [None, 26]
+
 def test_world_to_screen_puts_our_side_at_the_bottom():
     assert play.world_screen(9000, 3000, 0)[1] > play.world_screen(9000, 29000, 0)[1]   # owner 0's king is at y 3000
     assert play.world_screen(9000, 29000, 1)[1] > play.world_screen(9000, 3000, 1)[1]

@@ -580,7 +580,7 @@ class LivePlays:
             if c.get('kind') == 'ability':  # our press in flight (PlayerView's pending flag)
                 flying.append((due, c))
                 continue
-            match = next((q for _, q in flying if q['owner'] == c['owner'] and q['card_id'] == c['card_id']), None)
+            match = next((q for _, q in flying if q['owner'] == c['owner'] and q.get('card_id') == c['card_id']), None)
             if match is not None:
                 match['tap'] = c['tap']
             else:
