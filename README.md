@@ -1,6 +1,6 @@
 # Clash Royale imitation learning
 
-Replays → native engine → compact games → imitation learning → live play on Null's Royale.
+Replays → native engine → compact games → imitation learning → live play on Null's Royale or another client.
 
 The programs you run are at the top level; what they share is the `cr` package.
 
@@ -28,8 +28,8 @@ without an engine, emulator or GPU. Checkpoints hold plain dicts (config, weight
 module the code is in.
 
 `assets/` holds the game-build tables (card costs and rarities, effects, placement masks, replay card names, the
-881-token vocabulary, the supported client's hashes). The device reader binary `assets/clapha-reader-nulls` is not in
-the repository: get it from Arron and put it there before playing live.
+vocabulary, hero ability costs). The live clients' memory readers are private and never in this repository: each
+client is a folder outside it, `~/cr-clients/<name>` (`client.json` plus its reader; see `play.Client`).
 
 ## Convert
 
@@ -90,18 +90,22 @@ Don't change the code under a running job: copy the checkout for long runs.
 ## Play
 
 ```bash
-python play.py ~/cr-live/models/gen-large-v200/gen-large-v200.pt --tables ~/cr-live/models/unit_state_tables_150535029.json \
-  --temperature 0.25
+python live.py                                  # asks: which client, then manual / queue / watch, then games
+python play.py --client nulls [CHECKPOINT] [--queue] [--games N] [--temperature T]
 ```
 
-`--temperature` sets the card and tile temperature; when to play stays sampled as trained. Below 1 the model picks
-its preferred cards and tiles more consistently, and 0.1–0.25 has been far stronger than the default 1.0 for every
-model tested (see `docs/TRAINING.md`, section 9).
+Each client (`~/cr-clients/<name>/client.json`) names its emulator, game package, reader and its addresses, how to tell
+our side, the build check, unit tables and the default model, temperature and overlap. `play.py` boots that emulator if
+needed, checks the game build, installs the reader (a C source is built with the NDK), applies Nulls' review-crash patch
+if a snapshot rolled it back, starts the game and waits for a battle: start one by hand, or `--queue` presses Battle on
+the ladder. `--watch` records battles you play by hand, with no model and no taps. Every battle writes a log and a
+capture of every reader frame and the model's exact inputs to `~/cr-live/runs/<client>` (OneDrive stalls writes);
+`python tools/live_census.py CLIENT 'CAPTURES' 'ARCHIVES'` compares those inputs with training's.
 
-It boots the visible `Pixel_9_2` emulator if needed (`-gpu host`), verifies the game library, installs the reader,
-re-applies the review-crash patch an emulator snapshot may have rolled back, and waits for a battle. Start a friendly
-battle by hand, or add `--queue` to press Battle on the ladder. `--games N` plays several. Logs go to
-`~/cr-live/runs/live` (OneDrive stalls writes). The model sees advance opponent commands from the reader's queue.
+`--temperature` sets the card and tile temperature; when to play stays sampled as trained. Below 1 the model picks
+its preferred cards and tiles more consistently, and 0.05–0.25 has been far stronger than 1.0 for every model tested
+(see `docs/TRAINING.md`, section 9). Both ability buttons are pressed, each placed by its hero's deck order. Checkpoints
+from before the obs-v2 inputs (31 Oct) still play: their config has `inputs` 1, and they read the new inputs as trained.
 `--losses N` plays ladder games until the N-th loss. `python tools/winbar.py` opens a blue/red bar of the model's predicted
 win chance, (value + 1) / 2 from the policy's value head, following the newest live log. That head is IL's (PPO
 doesn't train it), so the bar is a rough display: it starts near 60% for most decks.

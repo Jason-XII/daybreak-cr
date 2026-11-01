@@ -83,7 +83,6 @@ def test_battle_loop_reserves_and_checks_before_real_tap_calls(monkeypatch, scen
                         players=[dict(owner=o, abilityRuntime=[]) for o in (0, 1)]))
 
     inputs = dict(hand_float=np.array([[.2] + [0.] * (C.HAND_FLOATS - 1)] * 4, np.float32))
-    monkeypatch.setattr(C, 'opponent_heroes', lambda *a: [])
     monkeypatch.setattr(C, 'cached_legal', lambda: None)
     monkeypatch.setattr(C, 'PlayerView', lambda *a: SimpleNamespace(step=lambda *a: inputs))
     calls = []

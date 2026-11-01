@@ -38,6 +38,9 @@ class Config:
     card_stats: int = 0    # > 0 (22 Oct): every card and unit id also gets its fixed stats from the game data (this
                            # many fields, assets/card_stats.json: range, targets, hp, damage, speed, splash, ...)
     interact: int = 0      # > 0 (26 Oct): heads of Interact, a card-to-unit attention branch added to the tile scores
+    inputs: int = 1        # 2 (obs-v2, 31 Oct): ability rows of 17 floats and the card of each button, hero / evolution form
+                           # in the hand, our ability carriers flagged. 1: every checkpoint before obs-v2; it is given the
+                           # obs-v2 inputs with those new values blanked, as it was trained (see v1_inputs)
 
 
 class ResBlock(nn.Module):
@@ -135,6 +138,24 @@ class Interact(nn.Module):
         return self.out(torch.cat([out_v, out_g, q], -1).flatten(2)).squeeze(-1)
 
 
+V1_ABILITY_FLOATS = 4  # available, ready, charges, cooldown: the first 4 of the obs-v2 ability row
+
+
+def v1_inputs(x):
+    """obs-v2 inputs as a checkpoint from before obs-v2 was trained on them: the ability rows cut to their first 4 floats,
+    and the values those inputs never had blanked (hand floats 4-5 were 'unknown' and a spare, 0 live; the object float
+    'ability_button' was a spare, always 0). Its weights for those were never trained, so they must stay 0."""
+    x = dict(x)
+    x['ability'] = x['ability'][..., :V1_ABILITY_FLOATS]
+    hand = x['hand_float'].clone()
+    hand[..., 4:6] = 0
+    x['hand_float'] = hand
+    objects = x['obj_float'].clone()
+    objects[..., C.OBJ_FLOAT_NAMES.index('ability_button')] = 0
+    x['obj_float'] = objects
+    return x
+
+
 class Policy(nn.Module):
     def __init__(self, config: Config, effect_table=None, card_table=None):
         super().__init__()
@@ -167,7 +188,8 @@ class Policy(nn.Module):
         ys, xs = torch.meshgrid(torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing='ij')
         self.register_buffer('coords', torch.stack([xs, ys])[None], persistent=False)
         hand_in = 4 * (2 * d + C.HAND_FLOATS)
-        rest_in = (4 * d) + 8 + (d + 4) + 2 * (d + 4) + 8 * (d + 3) + 2 * d + C.SCALARS
+        ability_in = 2 * (C.ABILITY_FLOATS + d) if c.inputs >= 2 else 2 * V1_ABILITY_FLOATS
+        rest_in = (4 * d) + ability_in + (d + 4) + 2 * (d + 4) + 8 * (d + 3) + 2 * d + C.SCALARS
         summary_in = 2 * ch + 2 * c.object_dim + hand_in + rest_in + c.board * c.board_rows * c.board_cols
         self.board = nn.Sequential(nn.Conv2d(ch, c.board, 1), nn.ReLU(),
                                    nn.AdaptiveAvgPool2d((c.board_rows, c.board_cols))) if c.board else None
@@ -244,11 +266,14 @@ class Policy(nn.Module):
         scores), core [B*T, core], value [B, T], state."""
         B, T = x['scalars'].shape[:2]
         N = B * T
+        if self.config.inputs < 2:
+            x = v1_inputs(x)
         flat = {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()}
         grid, pooled_objects, tokens = self._objects(flat, N)
         hand = torch.cat([self.card(flat['hand_card']), self.card(flat['mirror_card']), flat['hand_float']], -1)
         rest = torch.cat([
             self.card(flat['cycle_card']).flatten(1), flat['ability'].flatten(1),
+            *([self.card(flat['ability_card']).flatten(1)] if self.config.inputs >= 2 else []),
             torch.cat([self.card(flat['own_flight_card']), flat['own_flight_float']], -1),
             torch.cat([self.card(flat['opp_flight_card']), flat['opp_flight_float']], -1).flatten(1),
             torch.cat([self.card(flat['opp_seen_card']), flat['opp_seen_float']], -1).flatten(1),
@@ -498,6 +523,7 @@ class Agent:
     @torch.no_grad()
     def act(self, inputs, *, live_playable=None, live_abilities=None):
         x = tensors({k: v[None, None] for k, v in pack(inputs).items()}, self.device)
+        input_state = self.lstm
         out = self.model(x, self.lstm)
         self.lstm = out['state']
         # Live-only action masks are attached AFTER the network forward pass:
@@ -507,6 +533,8 @@ class Agent:
         if live_abilities is not None:
             allowed = torch.as_tensor([True, True, *live_abilities], device=self.device)
             out = {**out, 'what': out['what'].masked_fill(~allowed, float('-inf'))}
+        if getattr(self, 'input_capture', None) is not None:  # live diagnostics (cr/diagnostics.py): the exact inputs
+            self.input_capture(x, input_state)
         self.value = float(out['value'].reshape(-1)[0])  # the IL value head: expected outcome, -1 loss .. +1 win
         self.p_what = out['what'].float().softmax(-1).reshape(-1).tolist()  # wait / play / ability 1 / ability 2
         action, _ = sample(self.model, out, x)

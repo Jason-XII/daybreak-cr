@@ -162,3 +162,31 @@ def test_native_feature_helpers_match_python():
                  ability=dict(phase=rng.choice(['active', 'casting', '']), used=True, sinceUseMs=n(), uses=n(), maxCharges=3))
         for unit in ({}, u, dict(u, buffs=None, attack=None, ability=None, shieldMax=None)):
             assert fast.unit_state_values(unit) == C.unit_state_values(unit)
+
+
+def test_press_label_is_the_pressed_units_button():
+    """30 Oct: a press is labelled with the button whose controller holds the unit the replay pressed; no unit -> no label
+    (the old name guess gave button 1 for every press of a two-hero deck)."""
+    def decision(tick):
+        rows = [dict(controllerSlot=1, championObjectIds=[5]), dict(controllerSlot=2, championObjectIds=[77] if tick >= 40 else [])]
+        return dict(tick=tick, lean=dict(players=[dict(owner=0, abilityRuntime=rows), dict(owner=1, abilityRuntime=[])]))
+    decisions = [decision(t) for t in range(0, 200, 5)]
+    ticks = np.array([d['tick'] for d in decisions])
+    press = lambda tap, unit: dict(kind='ability', owner=0, tap=tap, tick=tap + convert.COMMAND_AGE, **({'unit': unit} if unit else {}))
+    header = dict(terminal=dict(winner=0), commands=[press(50, 77), press(100, 5), press(150, None), press(20, 77)])
+    y = convert._labels(header, decisions, ticks, 0, C.Vocab([]), dict(hand_card=np.zeros((len(ticks), 4), np.int64)))
+    at = lambda tap: int(np.searchsorted(ticks, tap)) - 1
+    assert (y['action_kind'][at(50)], y['action_controller'][at(50)], y['label_ok'][at(50)]) == (2, 1, True)
+    assert (y['action_kind'][at(100)], y['action_controller'][at(100)], y['label_ok'][at(100)]) == (2, 0, True)
+    assert y['action_kind'][at(150)] == 2 and not y['label_ok'][at(150)]    # no unit pressed: no guessed button
+    assert y['action_controller'][at(20)] == 1 and y['label_ok'][at(20)]     # unit listed only by the execution: found
+
+
+def test_dataset_check_runs_on_a_converted_dataset(tmp_path, monkeypatch, capsys):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('check_dataset', ROOT / 'tools/check_dataset.py')
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    tool.check(dataset(tmp_path / 'data', monkeypatch), 10)
+    out = capsys.readouterr().out
+    assert "3 games kept" in out and "own hand / queue with '?'" in out and 'ability_button' in out

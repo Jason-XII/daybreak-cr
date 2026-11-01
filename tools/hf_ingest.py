@@ -121,13 +121,15 @@ def classify(d):
 def ingest_part(path, out):
     import pyarrow.parquet as pq
     kept, rows = [], []
-    for raw in pq.read_table(path, columns=['payload_json']).column('payload_json').to_pylist():
+    table = pq.read_table(path, columns=['payload_json', 'team_expert_tags', 'opponent_expert_tags'])
+    for raw, team, opponent in zip(*(table.column(c).to_pylist() for c in table.column_names)):
         d = json.loads(raw)
         row = {'tag': d.get('battle_tag'), 'battle_time': d.get('battle_time_utc'), 'mode': d.get('game_mode')}
         reason = classify(d)
         if reason is None:
             try:
-                kept.append(json.dumps({**row, 'payload': payload(d)}))
+                # expert: a roster (former top-1000) player on that side (31 Oct: for validation sets and filters)
+                kept.append(json.dumps({**row, 'payload': dict(payload(d), expert={'team': bool(team), 'opponent': bool(opponent)})}))
             except (KeyError, ValueError, TypeError) as error:
                 reason = f'payload: {type(error).__name__}: {str(error)[:80]}'
         rows.append(json.dumps({**row, 'status': 'kept' if reason is None else 'left out', 'reason': reason}))

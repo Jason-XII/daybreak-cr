@@ -30,9 +30,13 @@ from cr.policy import Config, Policy
 DEFAULTS = dict(epochs=4.0, batch=32, chunk=128, workers=4, lr=3e-4, final_lr=1.0, weight_decay=0.01, warmup=500, value_coef=0.5,
                 next_play=0.5, card_dim=32, object_dim=32, attention_layers=1, conv_channels=48, conv_layers=4, core=256, board=0,
                 res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8, board_cols=4, res_norm=1, dist_bias=0,
-                card_stats=0, ability_labels=0, max_train=0, max_val=0,
+                card_stats=0, ability_labels=0, max_train=0, max_val=0, val_every=0, val_after='',
                 seed=0, log_every=50, checkpoint_every=1000, device='cuda')
 # final_lr: the learning rate falls linearly to lr x final_lr by the last step (1.0 = constant)
+# validation (31 Oct): after every pass, and every val_every steps (0 = only after passes; RUN/best.pt keeps the step with
+# the lowest 'val' loss); val_after 'YYYY-MM-DD': battles from that day on are left out of training and reported as
+# 'val_recent' (the newest game data: how the model does on balance it has not trained on); 'val_expert' is the part of
+# 'val' played by roster players. max_val caps each set (use it with val_every: a full set costs minutes).
 # medium model (3.4M, 2026-10-16): --card_dim 64 --object_dim 96 --attention_layers 3 --conv_channels 96 --conv_layers 6
 # --core 384
 # large model (8.0M, 2026-10-18): --card_dim 64 --object_dim 160 --attention_layers 6 --conv_channels 160 --conv_layers 12
@@ -69,12 +73,18 @@ def train(data, out, settings):
     vocab = C.Vocab(manifest['schema']['vocab'])
     if settings.get('ability_labels') and manifest['schema'].get('presses_at_tap'):
         raise SystemExit('--ability_labels 1 shifts presses to the tap; this dataset has them there already (convert.py since PR #14)')
-    train_entries = [e for e in manifest['entries'] if not e['validation']]
-    val_entries = [e for e in manifest['entries'] if e['validation']]
+    after = settings.get('val_after') or ''
+    recent = (lambda e: bool(after) and (e.get('battle_time') or '') >= after)
+    train_entries = [e for e in manifest['entries'] if not e['validation'] and not recent(e)]
+    val_sets = {'val': [e for e in manifest['entries'] if e['validation'] and not recent(e)]}
+    val_sets['val_expert'] = [e for e in val_sets['val'] if e.get('expert')]
+    val_sets['val_recent'] = [e for e in manifest['entries'] if recent(e)]
+    if after and not val_sets['val_recent']:
+        raise SystemExit(f'--val_after {after}: no battle in the manifest is that recent (or it has no battle_time)')
     if settings.get('max_train'):  # ablations: the same random subset for every run with the same seed
         train_entries = random.Random(settings['seed']).sample(train_entries, min(settings['max_train'], len(train_entries)))
     if settings.get('max_val'):
-        val_entries = random.Random(settings['seed'] + 1).sample(val_entries, min(settings['max_val'], len(val_entries)))
+        val_sets = {k: random.Random(settings['seed'] + 1).sample(v, min(settings['max_val'], len(v))) for k, v in val_sets.items()}
     batch = max(1, settings['batch'] // world)
     # ponytail: an epoch is an estimate (random chunk offsets vary the count a little); exact epoch ends are not kept
     total = int(settings['epochs'] * sum(math.ceil(e['decisions'] / settings['chunk']) for e in train_entries) // settings['batch'])
@@ -83,7 +93,7 @@ def train(data, out, settings):
     stats = C.card_matrix(vocab) if settings.get('card_stats') else None  # --card_stats 1: the table's fields
     config = Config(vocab_size=len(vocab), next_play=settings['next_play'] > 0, **{k: settings[k] for k in
                     ('card_dim', 'object_dim', 'attention_layers', 'conv_channels', 'conv_layers', 'core')},
-                    board=settings.get('board', 0), card_stats=0 if stats is None else stats.shape[1],
+                    board=settings.get('board', 0), card_stats=0 if stats is None else stats.shape[1], inputs=2,
                     **{k: settings.get(k, v) for k, v in dict(res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8,
                                                               board_cols=4, res_norm=1, dist_bias=0).items()})
     policy = Policy(config, C.effect_matrix(vocab), stats).to(device)
@@ -124,15 +134,29 @@ def train(data, out, settings):
                                            batch_size=batch, num_workers=settings['workers'], collate_fn=collate,
                                            pin_memory=cuda)
 
+    best, validated = out / 'best.json', [None]
+
     def validate():
+        if validated[0] == step:  # a pass that ends on a val_every step
+            return
+        validated[0] = step
         if rank == 0:
             policy.eval()
-            with torch.no_grad(), autocast():
-                rows = [loss_and_metrics(policy, *({k: v.to(device) for k, v in g.items()} for g in b),
-                                         settings['value_coef'], settings['next_play'])[1]
-                        for b in loader(val_entries, 0, validation=True)]
+            for split, entries in val_sets.items():
+                if not entries:
+                    continue
+                with torch.no_grad(), autocast():
+                    rows = [loss_and_metrics(policy, *({k: v.to(device) for k, v in g.items()} for g in b),
+                                             settings['value_coef'], settings['next_play'])[1]
+                            for b in loader(entries, 0, validation=True)]
+                result = summarize(rows)
+                write(dict(step=step, split=split, views=len(entries), **result))
+                if split == 'val' and (not best.exists() or result['loss'] < json.loads(best.read_text())['loss']):
+                    torch.save(dict(config=asdict(config), model=policy.state_dict(), step=step, settings=settings,
+                                    vocab=list(vocab.index)), out / 'best.tmp')
+                    (out / 'best.tmp').replace(out / 'best.pt')
+                    best.write_text(json.dumps(dict(step=step, loss=result['loss'])))
             policy.train()
-            write(dict(step=step, split='val', **summarize(rows)))
         if world > 1:
             dist.barrier()
 
@@ -161,6 +185,8 @@ def train(data, out, settings):
                 window = []
             if step % settings['checkpoint_every'] == 0:
                 checkpoint()
+            if settings.get('val_every') and step % settings['val_every'] == 0 and step < total:
+                validate()
             if step >= total:
                 break
         if step == begun:  # else this loop would never end

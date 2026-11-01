@@ -455,6 +455,7 @@ def press(native, command, presses, choices):
             card = cards[choices[k] % len(cards)]
             pick = max((r for r in candidates if str(r[1]) == card), key=lambda r: r[0])
     presses.append(dict(tick=command['tick'], owner=command['owner'], cards=cards, unit=list(pick)))
+    command['unit'] = int(pick[0])  # the label's button is this unit's controller (_press_slot), not a guess from names
     native.queue_ability_action_at(SimpleNamespace(owner=command['owner'], object_index=-2, secondary_index=int(pick[0])),
                                    execute_in_ticks=1, check_ready=False)
     return True
@@ -625,34 +626,19 @@ def play_exact(native, payload, seeds=0, max_presses=4):
 
 
 # ---- a played game -> inputs and labels ---------------------------------------------------------------------------------
-def own_starts(deck_ids, plays):
-    """Every starting (hand as a frozenset, queue as a tuple) of an 8-card deck that the play sequence fits. At most
-    70 x 24 = 1,680 to try. Cards never played can sit anywhere among the slots the plays leave open."""
-    deck_ids = tuple(deck_ids)
-    if len(set(deck_ids)) != len(deck_ids) or len(deck_ids) != 8:
-        raise ValueError('a deck is 8 different cards')
-    unknown = [c for c in plays if c not in deck_ids]
-    if unknown:
-        raise ValueError(f'played cards not in the deck: {sorted(set(unknown))}')
-    out = []
-    for hand in itertools.combinations(deck_ids, 4):
-        for queue in itertools.permutations([c for c in deck_ids if c not in hand]):
-            if hand_slots(hand, queue, plays) is not None:
-                out.append((frozenset(hand), tuple(queue)))
-    return out
-
-
 def game_features(game, owner, vocab, legal=None, compact=True):
     """All decisions of one played game for `owner` -> (inputs: dict of [T, ...] arrays, labels: dict of [T] arrays)."""
     header, decisions = game['header'], game['decisions']
     ticks = np.array([d['tick'] for d in decisions])
     landed = [(c.get('executed_tick') or c['tick'], c) for c in header['commands']
               if c['kind'] == 'card' and c.get('executed_tick', 0) is not None]
-    own_plays = [cid for _, cid in sorted((t, c['card_id']) for t, c in landed if c['owner'] == owner)]
-    first = [p for p in decisions[0]['lean']['state']['players'] if p['owner'] == owner][0]
-    forms = (header.get('episode') or {}).get(f'deck{1 - owner}_form_availability')
-    view = C.PlayerView(owner, vocab, C.opponent_heroes(decisions[0], forms, owner), legal,
-                        own_starts([c['cardId'] for c in first['deck']], own_plays))
+    for c in header['commands']:  # our presses in flight, by the button of the unit the replay pressed (as the arena / live)
+        if c['kind'] == 'ability' and c['owner'] == owner:
+            slot = _press_slot(decisions, max(0, int(np.searchsorted(ticks, c['tap'])) - 1),
+                               int(np.searchsorted(ticks, c['tick'])), owner, c.get('unit'))
+            if slot is not None:
+                landed.append((c['tick'], {'kind': 'ability', 'owner': owner, 'controller': slot, 'tap': c['tap']}))
+    view = C.PlayerView(owner, vocab, legal, (header.get('episode') or {}).get(f'deck{owner}_form_availability') or ())
     if compact:
         view.state['object_slots'] = min(C.MAX_OBJECTS, max(1, max(len(d['objects']) for d in decisions)))
     rows = [view.step(d, landed) for d in decisions]
@@ -692,9 +678,6 @@ def _labels(header, decisions, ticks, owner, vocab, inputs):
            'label_ok': np.ones(T, bool), 'value': np.zeros(T, np.float32)}
     winner = (header.get('terminal') or {}).get('winner')
     out['value'][:] = 0.0 if winner not in (0, 1) else (1.0 if winner == owner else -1.0)
-    names = {}
-    for a in [p for p in decisions[0]['lean']['players'] if p['owner'] == owner][0]['abilityRuntime']:
-        names[a['controllerSlot'] - 1] = (a.get('actionDataName') or '').lower()
     for c in header['commands']:
         if c['owner'] != owner or (c['kind'] == 'card' and c.get('executed_tick', 0) is None):
             continue
@@ -710,10 +693,29 @@ def _labels(header, decisions, ticks, owner, vocab, inputs):
             if card not in inputs['hand_card'][i]:
                 out['label_ok'][i] = False        # the card is not visible in the input (uncertain hand / refill)
         else:
-            hints = [h.lower() for h in c.get('hints') or ()]
-            slot = next((k for k, n in names.items() if any(h in n.replace('_', '') for h in hints)), 0)
-            out['action_kind'][i], out['action_controller'][i] = 2, slot
+            slot = _press_slot(decisions, i, int(np.searchsorted(ticks, c['tick'])), owner, c.get('unit'))
+            out['action_kind'][i] = 2
+            if slot is None:
+                out['label_ok'][i] = False        # no unit pressed in the replay, or no button lists it: no guess
+            else:
+                out['action_controller'][i] = slot
     return out
+
+
+def _press_slot(decisions, start, end, owner, unit):
+    """The ability button (0 / 1) whose controller holds `unit` (the unit the replay pressed: press()) at the first decision
+    from the tap to the execution that lists it; None if none does. (30 Oct: the old guess from the deck's hero names always
+    gave button 1: in 400 games, 0 of 140 presses in two-hero views were labelled button 2, while the engine state showed
+    button 2 used after 71 of them.)"""
+    if unit is None:
+        return None
+    for d in decisions[start:max(end, start + 1)]:
+        for p in d['lean']['players']:
+            if p['owner'] == owner:
+                for a in p['abilityRuntime']:
+                    if unit in (a.get('championObjectIds') or ()):
+                        return a['controllerSlot'] - 1
+    return None
 
 
 def targets(x, y):
@@ -732,9 +734,8 @@ def targets(x, y):
             ok[i] = False
     ab = y['action_kind'] == 2
     what[ab] = C.ABILITY1 + y['action_controller'][ab]
-    # which card: only where the whole hand is known. The replay's own hand is reconstructed from the game's plays, and
-    # the card played next is always among the certain ones, so with a '?' in the hand "pick a card that is not '?'" would
-    # be a hint from the future (live, the hand is always known). Found by the validation breakdown, 2026-10-12.
+    # which card: only where the whole hand is known (the hand is the engine's own since 31 Oct, so this drops only cards
+    # the vocabulary lacks; before, every opening had reconstructed '?' cards and its card choice was never trained)
     hand_known = (x['hand_card'] != 1).all(-1)
     which_ok = ok & hand_known
     # the next play from each decision (a play is 0 decisions from its own decision); none left counts as far away
@@ -785,15 +786,25 @@ def write_archive(path, game, vocab, legal, metadata):
                 np.lib.format.write_array(stream, value, allow_pickle=False)
         if metadata['kept']:
             vocab.misses.clear()
+            C.COST_MISSES.clear()
+            header = game.get('header') or {}
+            episode, winner = header.get('episode') or {}, (header.get('terminal') or {}).get('winner')
+            expert = metadata.pop('expert', None) or {}
             for owner in (0, 1):
                 x, y = game_features(game, owner, vocab, legal)
                 t = targets(x, y)
                 for name, value in _pack(x, t).items():
                     put(f'p{owner}_{name}', value)
+                side = 'team' if owner == episode.get('source_team_owner') else 'opponent'
+                # won / expert (a roster player of the HF dataset) / battle_time: for validation sets and filters (31 Oct)
                 metadata['entries'].append(dict(file=path.name, tag=metadata['tag'], owner=owner,
-                                                validation=held_out(metadata['tag']), decisions=len(t['what'])))
+                                                validation=held_out(metadata['tag']), decisions=len(t['what']),
+                                                won=winner == owner, expert=expert.get(side),
+                                                battle_time=metadata.get('battle_time')))
             if vocab.misses:  # ids this vocabulary lacks: the model sees them as unknown (the manifest sums them)
                 metadata['unknown_ids'] = {str(i): n for i, n in vocab.misses.items()}
+            if C.COST_MISSES:  # cards without a cost: the model reads them as costing 3
+                metadata['missing_costs'] = {str(i): n for i, n in C.COST_MISSES.items()}
         put('_metadata', np.frombuffer(json.dumps(metadata, sort_keys=True).encode(), dtype=np.uint8))
     os.replace(tmp, path)
 
@@ -860,6 +871,7 @@ def worker(index, engine, jobs, out, clapha_engine, seeds=0):
             for side, troop in zip(('team', 'opponent'), job['towers']):
                 payload['battle'][side]['players'][0]['tower_card'] = {'card_key': troop, 'level': 16}
         entry = {'tag': job['tag'], 'part': job['part'], 'row': job['row'], 'engine': name,
+                 'battle_time': payload.get('battle_time'), 'expert': payload.get('expert'),
                  **({'towers': job['towers']} if job.get('towers') else {})}
         started = time.perf_counter()
         (out / f'current-{name}-{index}.txt').write_text(job['tag'])  # a native crash kills the worker here
@@ -988,7 +1000,7 @@ def convert(args):
         run(retry)
 
     entries, rejected, missing = [], [], []
-    unknown, games_with = Counter(), Counter()
+    unknown, games_with, costless = Counter(), Counter(), Counter()
     for r in selected:
         path = archive_path(out, r['tag'])
         if not path.exists():
@@ -999,13 +1011,19 @@ def convert(args):
         for i, n in meta.get('unknown_ids', {}).items():
             unknown[int(i)] += n
             games_with[int(i)] += 1
+        for i, n in meta.get('missing_costs', {}).items():
+            costless[int(i)] += 1
         if not meta['kept']:
             rejected.append(dict(tag=r['tag'], why=meta.get('why')))
     if missing:
         raise SystemExit(f'{len(missing)} games have no archive yet (first: {missing[:5]}); rerun to finish')
     manifest = dict(schema=dict(vocab=list(C.Vocab.load().index), legal=True, presses_at_tap=True), entries=entries,
                     rejected=rejected,
-                    unknown_ids={str(i): dict(lookups=n, games=games_with[i]) for i, n in unknown.most_common()})
+                    unknown_ids={str(i): dict(lookups=n, games=games_with[i]) for i, n in unknown.most_common()},
+                    missing_costs={str(i): n for i, n in costless.most_common()})
+    if costless:
+        print(f'WARNING: {len(costless)} cards have no cost in card_costs.json and read as 3 (as (card, games): '
+              f'{costless.most_common(8)}); add them before training', flush=True)
     if unknown:  # 30 Oct: October-only units were silently 'unknown' for weeks; say it every time
         print(f'WARNING: {len(unknown)} ids are not in the vocabulary and reach the model as unknown (most common: '
               f'{[(i, games_with[i]) for i, _ in unknown.most_common(8)]} as (id, games)); append them with '

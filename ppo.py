@@ -217,7 +217,7 @@ class Critic(nn.Module):
         super().__init__()
         self.trunk = trunk  # a Policy; its action heads go unused
         c, d = trunk.config, trunk.config.card_dim
-        self.private = policy.mlp(4 * (2 * d + C.HAND_FLOATS) + 4 * d + 8, 128, 128)
+        self.private = policy.mlp(4 * (2 * d + C.HAND_FLOATS) + 4 * d + 2 * C.ABILITY_FLOATS, 128, 128)
         self.win = policy.mlp(c.core + C.SCALARS + 128, 256, 1)
         self.short = policy.mlp(c.core + C.SCALARS + 128, 256, 1)
 

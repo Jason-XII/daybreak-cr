@@ -5,6 +5,7 @@ import json
 import math
 import os
 from pathlib import Path
+import zlib
 
 try:
     from cr import _native_features  # tools/build_features.py
@@ -21,9 +22,25 @@ CELLS = W * H
 MAX_OBJECTS, MAX_EFFECTS = 128, 6
 DEPLOY_DELAY = 22            # a play lands ~22 ticks after the tap (measured live 21-25): its label is the board at the tap
 OPP_VISIBLE = 13             # the opponent's command reaches our queue a median 13 ticks before it lands (2-21)
+# How many ticks before landing the opponent's command first shows in our queue, live (1 Nov 2026: 20 quantiles each of
+# 538 and 3,295 plays on two clients, execute_tick - first_seen_tick). Live play shows the command from the tick it is seen
+# (its 'seen'); replays and the arena have no queue, so each command gets one of these leads (fixed per command).
+OPP_LEADS = (5, 6, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 13, 13, 14, 14, 15, 15, 16, 17,
+             9, 10, 10, 11, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 19)
+
+
+def opp_seen(tick, c):
+    """The tick the opponent's command `c` (landing at `tick`) is first visible: live, when our queue showed it; otherwise
+    one of OPP_LEADS chosen by the command itself (the same in every run and for both converters)."""
+    if c.get('seen') is not None:
+        return c['seen']
+    key = f"{tick},{c.get('owner')},{c.get('card_id')},{c.get('x')},{c.get('y')}".encode()
+    return tick - OPP_LEADS[zlib.crc32(key) % len(OPP_LEADS)]
 UNIT_STATES = 31
 OBJ_FLOATS = 12 + UNIT_STATES + 2 + 2
 HAND_FLOATS = 7
+ABILITY_STATES = 12          # the button state one-hot: 0 .. 10 as read, 11 any other value
+ABILITY_FLOATS = 5 + ABILITY_STATES
 SCALARS = 2 + 6 + 2 + 4     # elixir both, clock_features, crowns both, spare
 KINDS = {'unit': 1, 'tower': 2, 'area': 3, 'projectile': 4, 'timed': 5}
 # names of every float input, in order (keep in step with the code below)
@@ -33,22 +50,36 @@ UNIT_STATE_NAMES = ('hidden', 'immune', 'invisible', 'airborne', 'stops_movement
                     'state_3', 'state_5', 'since_ability_s', 'ability_uses', 'height_z', 'jump_s', 'return_shot',
                     'special_cooldown_s', 'invisible_again_s', 'dash_hop')
 OBJ_FLOAT_NAMES = ('x', 'y', 'dx', 'dy', 'hp_frac', 'log_max_hp', 'deploy_s', 'has_target', 'target_dx', 'target_dy',
-                   'own', 'is_tower') + UNIT_STATE_NAMES + ('king_awake', 'daggers', 'spare_1', 'spare_2')
-HAND_FLOAT_NAMES = ('cost', 'affordable', 'evo_ready', 'evo_progress', 'unknown', 'spare_1', 'spare_2')
+                   'own', 'is_tower') + UNIT_STATE_NAMES + ('king_awake', 'daggers', 'ability_button', 'spare_2')
+HAND_FLOAT_NAMES = ('cost', 'affordable', 'evo_ready', 'evo_progress', 'hero_form', 'evolution_form', 'spare_1')
+# per ability button (31 Oct): which hero it belongs to is the 'ability_card' id input; 'pending' = our press is in flight
+ABILITY_FLOAT_NAMES = ('available', 'ready', 'charges', 'cooldown', 'pending') + tuple(
+    f'button_{i}' for i in range(ABILITY_STATES - 1)) + ('button_other',)
 SCALAR_NAMES = ('elixir_own', 'elixir_opp', 'rate_1x', 'rate_2x', 'rate_3x', 'overtime', 'period_left_min',
                 'next_rate_min', 'crowns_own', 'crowns_opp', 'chef_cooking_own', 'chef_cooking_opp', 'spare_3', 'spare_4')
 assert len(UNIT_STATE_NAMES) == UNIT_STATES and len(OBJ_FLOAT_NAMES) == OBJ_FLOATS
-assert len(HAND_FLOAT_NAMES) == HAND_FLOATS and len(SCALAR_NAMES) == SCALARS
+assert len(HAND_FLOAT_NAMES) == HAND_FLOATS and len(SCALAR_NAMES) == SCALARS and len(ABILITY_FLOAT_NAMES) == ABILITY_FLOATS
 OBJECT_KEYS = ('obj_card', 'obj_data', 'obj_side', 'obj_kind', 'obj_float', 'eff_id', 'eff_left')
 TOWER_IDS = range(5000000, 5000006)
 COSTS = {int(k): v for k, v in json.loads((ASSETS / 'card_costs.json').read_text()).items()}
+COST_MISSES = collections.Counter()  # cards card_costs.json lacks (read as 3): convert.py reports them per game
+
+
+def cost(card):
+    """A card's elixir cost from card_costs.json; a card it lacks counts in COST_MISSES and reads as 3 (31 Oct: it was a
+    silent 3)."""
+    c = COSTS.get(card)
+    if c is None:
+        COST_MISSES[card] += 1
+        return 3
+    return c
 RARITY = json.loads((ASSETS / 'card_rarity.json').read_text())
 _EFF = json.loads((ASSETS / 'effect_vectors.json').read_text())
 EFFECT_VECTOR = {name: np.array(v, np.float32) for name, v in _EFF['effects'].items()}
 EFFECT_FIELDS = len(_EFF['fields'])
 _EFFECT_NAMES = {int(i): n for i, n in json.loads((ASSETS / 'effect_ids.json').read_text())['effects']}
 MIRROR = 28000006
-UNKNOWN = -1                 # a hand card the replay reconstruction is not sure of
+UNKNOWN = -1                 # a card id read as unknown (no replay hand is reconstructed since 31 Oct)
 WAIT, PLAY, ABILITY1, ABILITY2 = 0, 1, 2, 3
 NEXT_EDGES = (1, 2, 3, 5, 9, 17)
 # Royal Chef (clapha-engine docs/ASPECTS.md): its cooking progress is not found in memory; the game data's rule
@@ -262,9 +293,30 @@ def _aim(u):
     return None
 
 
-def decision_inputs(d, owner, vocab, prev_pos, state, shared=None):
-    """One decision's object inputs. `prev_pos`: {object id: (x, y)} at the previous decision; `state`: per-game
-    counters (PlayerView.state)."""
+def hit_points(o):
+    """(hp, max hp), or (None, None) where the live reader reports none: it keeps a pair with 0 <= hp <= 4 max and
+    max <= 100,000 (1 Nov: Tombstone hero's visual dummies have 4,089,994 hp; the engine reported them, the reader did not.
+    The readers' old hp <= max dropped evolved Bats, Witch and P.E.K.K.A once they heal past their maximum, up to 2x:
+    35-47% of their rows)."""
+    hp, most = o.get('hp'), o.get('maxHp')
+    return (hp, most) if hp is not None and most is not None and 0 <= hp <= 4 * most and most <= 100000 else (None, None)
+
+
+def object_kind(o):
+    """From the two things every producer reads alike, the id range and whether there are hitpoints (1 Nov: the engine's
+    unit_states() and the live adapter had their own rules; an engine 'other' object was fed as a unit)."""
+    oid = o['nativeObjectId']
+    if oid in TOWER_IDS:
+        return 'tower'
+    if 3000000 <= oid < 5000000:
+        return 'area' if oid < 4000000 else 'projectile'
+    return 'timed' if hit_points(o)[0] is None else 'unit'
+
+
+def decision_inputs(d, owner, vocab, prev_pos, state, shared=None, gap=5, buttons=None):
+    """One decision's object inputs. `prev_pos`: {object id: (x, y)} at the previous decision, `gap` ticks ago (movement
+    is scaled to 5 ticks: live decisions are 5-7 ticks apart, replays and the arena exactly 5); `state`: per-game counters
+    (PlayerView.state); `buttons`: {object id: 1 / 2}, our units that carry the hero / champion ability of that button."""
     if shared is None:
         shared = {}
     if not shared:
@@ -287,16 +339,17 @@ def decision_inputs(d, owner, vocab, prev_pos, state, shared=None):
         u = units.get(oid, {})
         ox, oy = rotate(o['x'], o['y'], owner)
         px, py = rotate(*prev_pos[oid], owner) if oid in prev_pos else (ox, oy)
-        kind = 'tower' if oid in TOWER_IDS else u.get('kind', 'unit')
+        kind = object_kind(o)
         x['obj_card'][i], x['obj_data'][i] = vocab(o['cardId']), vocab(o['dataGlobalId'])
         x['obj_side'][i] = 1 if o['owner'] == owner else 2
         x['obj_kind'][i] = KINDS.get(kind, 1)
-        hp, mhp = o.get('hp'), o.get('maxHp')
+        hp, mhp = hit_points(o)
         target = (o.get('targetEntityKey') or [None, None, None])[2]
         tpos = positions.get(target)
         tx, ty = rotate(*tpos, owner) if tpos else (ox, oy)
         phase = o.get('phaseRuntime') or {}
-        f = [ox / 18000, oy / 32000, _clip((ox - px) / 1000, -3, 3), _clip((oy - py) / 1000, -3, 3),
+        scale = 5 / max(gap, 1)
+        f = [ox / 18000, oy / 32000, _clip((ox - px) / 1000 * scale, -3, 3), _clip((oy - py) / 1000 * scale, -3, 3),
              hp / mhp if hp is not None and mhp else 0.0, math.log1p(max(mhp or 0, 0)) / 16,
              _ms_s(phase.get('deployRemainingMs'), 5), float(tpos is not None),
              _clip((tx - ox) / 1000, -10, 10) / 10, _clip((ty - oy) / 1000, -10, 10) / 10,
@@ -310,7 +363,7 @@ def decision_inputs(d, owner, vocab, prev_pos, state, shared=None):
             ax, ay = rotate(aim[0], aim[1], owner)
             us[16], us[17] = _clip((ax - ox) / 1000, -20, 20) / 20, _clip((ay - oy) / 1000, -20, 20) / 20
         extra = [float(u.get('kingAwake', 0) or 0), (u.get('daggers') or 0) / 8 if u.get('daggers') is not None else 0.0,
-                 0.0, 0.0]
+                 (buttons or {}).get(oid, 0) / 2, 0.0]
         x['obj_float'][i] = np.array(f + us + extra, np.float32)
         buffs = sorted(u.get('buffs') or (), key=lambda b: -(b.get('remainingMs') or 0))
         state['effects_dropped'] += max(0, len(buffs) - MAX_EFFECTS)
@@ -318,15 +371,6 @@ def decision_inputs(d, owner, vocab, prev_pos, state, shared=None):
             x['eff_id'][i, k] = vocab(b.get('globalId'))
             x['eff_left'][i, k] = _ms_s(b.get('remainingMs'), 30)
     return x
-
-
-def opponent_heroes(first_decision, forms, owner):
-    """The opponent's hero / champion cards, known from the first tick: their deck's hero forms (`forms`: the
-    opponent's form flag per deck slot, 2 = hero) and every Champion."""
-    opp = [p for p in first_decision['lean']['state']['players'] if p['owner'] == 1 - owner][0]
-    deck = [c['cardId'] for c in opp['deck']]
-    return [c for i, c in enumerate(deck) if (forms and i < len(forms) and forms[i] == 2)
-            or RARITY.get(str(c)) == 'Champion'][:2]
 
 
 def crowns(d, owner):
@@ -356,32 +400,6 @@ def destroyed_lanes(d, owner):
 QUEUE = 4
 
 
-def _state(start, plays_before):
-    hand, queue = set(start[0]), list(start[1])
-    for card in plays_before:
-        hand.remove(card)
-        hand.add(queue.pop(0))
-        queue.append(card)
-    return frozenset(hand), tuple(queue)
-
-
-def advance(states, plays):
-    """The (hand, queue) states after `plays` more plays, duplicates merged: the starts that fit a replay become the same
-    state once their differing cards have been played, so a game soon has one."""
-    return {_state(s, plays) for s in states}
-
-
-def certain(states):
-    """What is certain over these (hand, queue) states: the cards in hand in all of them (a set), and the queue positions
-    that agree (a tuple with None where they differ)."""
-    states = list(states)
-    if not states:
-        return frozenset(), (None,) * QUEUE
-    hand = frozenset.intersection(*(h for h, _ in states))
-    queue = tuple(states[0][1][i] if all(q[i] == states[0][1][i] for _, q in states) else None for i in range(QUEUE))
-    return hand, queue
-
-
 def opponent_counted(plays):
     """For each card the opponent has played: how many more of their plays until it is back in their hand (0 = in hand
     now). Exact without knowing their deck or starting order: a card played k-th returns at play k + 4."""
@@ -393,17 +411,22 @@ def opponent_counted(plays):
 
 class PlayerView:
     """One player's inputs, decision by decision: the same code for converted replays, the native arena and live play.
-    step(d, landed) takes the raw record of one decision (the lean frame, objects(), unit_states()) and every card command
-    issued so far as (execution tick, command); what the player may know of them at d's tick follows the rules here (own
-    plays from the tap, landing - 22; the opponent's from 13 ticks before landing; plays landed by now). `candidates`: own
-    starting hands that fit a replay's plays (convert.own_starts), where the hand is reconstructed; None where it is read
-    (always known)."""
+    step(d, landed) takes the raw record of one decision (the lean frame, objects(), unit_states()) and every command
+    issued so far as (execution tick, command): cards, and our ability presses as {'kind': 'ability', 'owner', 'controller'
+    (0 / 1), 'tap'}; what the player may know of them at d's tick follows the rules here (own
+    plays from the tap, landing - 22; the opponent's from 13 ticks before landing; plays landed by now). The own hand and
+    queue are read from the record everywhere, as live play reads them (31 Oct: replays used to show a hand card only once
+    every deal that fits the whole game agreed on it, so the first 4 plays of every game had '?' cards, and the one visible
+    card was the next to be played; the engine's own deal fits every play, so its hand is used as it is)."""
 
-    def __init__(self, owner, vocab, opp_heroes, legal=None, candidates=None):
-        self.owner, self.vocab, self.opp_heroes, self.legal, self.candidates = owner, vocab, opp_heroes, legal, candidates
+    def __init__(self, owner, vocab, legal=None, own_forms=()):
+        """own_forms: our deck's form flag per deck slot (1 evolution, 2 hero), as replays, the arena and the live reader
+        give them. The opponent's heroes / champions are known once one of their units carries an ability on the board
+        (31 Oct: they came from the opponent's deck, which live play never sees on ladder, nor a human player)."""
+        self.owner, self.vocab, self.legal, self.own_forms = owner, vocab, legal, tuple(own_forms)
+        self.opp_heroes = set()
         self.state = {'dropped': 0, 'effects_dropped': 0}
-        self.prev, self.views, self.clock_state = {}, {}, {}
-        self.states, self.played = (None, 0) if candidates is None else (set(candidates), 0)  # candidate states so far
+        self.prev, self.prev_tick, self.clock_state = {}, None, {}
         self.chef = {'has': None, 'last': {0: CHEF_START_TICKS, 1: CHEF_START_TICKS}, 'fed': set()}
 
     def step(self, d, landed, shared=None):
@@ -411,23 +434,22 @@ class PlayerView:
         t = d['tick']
         ability_clock(self.clock_state, t, d['units'])
         chef_clock(self.chef, t, d)
-        x = decision_inputs(d, owner, vocab, self.prev, self.state, shared)
-        self.prev = {o['nativeObjectId']: (o['x'], o['y']) for o in d['objects']}
-        players = {p['owner']: p for p in d['lean']['state']['players']}
         lean = {p['owner']: p for p in d['lean']['players']}
+        controllers = lean[owner]['abilityRuntime'][:2]
+        buttons = {oid: a['controllerSlot'] for a in controllers for oid in a.get('championObjectIds') or ()}
+        gap = 5 if self.prev_tick is None else t - self.prev_tick
+        x = decision_inputs(d, owner, vocab, self.prev, self.state, shared, gap, buttons)
+        self.prev, self.prev_tick = {o['nativeObjectId']: (o['x'], o['y']) for o in d['objects']}, t
+        presses = [(tt, c) for tt, c in landed if c.get('kind') == 'ability']
+        landed = [(tt, c) for tt, c in landed if c.get('kind') != 'ability']
+        players = {p['owner']: p for p in d['lean']['state']['players']}
         me, them = players[owner], players[other]
         before = sorted((tt, c['card_id']) for tt, c in landed if c['owner'] == owner and tt <= t)
         before = [c for _, c in before]
-        if self.candidates is None:
-            sure, queue = None, tuple(c['cardId'] for c in sorted(me.get('cycle') or (), key=lambda c: c['cycleIndex']))[:4]
-        else:
-            if len(before) not in self.views:  # a play at a time: the candidate states advance, merged as they converge
-                self.states, self.played = advance(self.states, before[self.played:]), len(before)
-                self.views[len(before)] = certain(self.states)
-            sure, queue = self.views[len(before)]
+        queue = tuple(c['cardId'] for c in sorted(me.get('cycle') or (), key=lambda c: c['cycleIndex']))[:4]
         hand = [None] * 4
         for h in me['hand']:
-            hand[h['handIndex']] = h['cardId'] if sure is None or h['cardId'] in sure else UNKNOWN
+            hand[h['handIndex']] = h['cardId']
         last_own = before[-1] if before else None
         evo = {e['cardId']: e for e in lean[owner]['evolutionRuntime']}
         x['hand_card'] = np.array([vocab(c) for c in hand], np.int64)
@@ -436,29 +458,40 @@ class PlayerView:
         for i, c in enumerate(hand):
             if c is None:
                 continue
-            real = [h['cardId'] for h in me['hand'] if h['handIndex'] == i][0]
-            cost = (COSTS.get(last_own, 3) + 1) if real == MIRROR and last_own else COSTS.get(real, 3)
+            row = [h for h in me['hand'] if h['handIndex'] == i][0]
+            real, slot = row['cardId'], row.get('deckSlot', -1)
+            form = self.own_forms[slot] if 0 <= slot < len(self.own_forms) else 0
+            price = cost(last_own) + 1 if real == MIRROR and last_own else cost(real)
             e = evo.get(real) or {}
-            hf[i] = (cost / 10, float(me['elixirRaw'] >= cost * 10000), float(bool(e.get('ready'))),
-                     (e.get('progress') or 0) / max(1, e.get('cycleRequired') or 1), float(c == UNKNOWN), 0.0, 0.0)
+            hf[i] = (price / 10, float(me['elixirRaw'] >= price * 10000), float(bool(e.get('ready'))),
+                     (e.get('progress') or 0) / max(1, e.get('cycleRequired') or 1), float(form == 2), float(form == 1), 0.0)
         x['hand_float'] = hf
         x['cycle_card'] = np.array([vocab(q) if q is not None else 1 for q in queue] + [1] * (4 - len(queue)), np.int64)
-        ab = np.zeros((2, 4), np.float32)
-        for a in lean[owner]['abilityRuntime'][:2]:
+        # each button: its state, whether our press of it is in flight (tap .. execution: the button still reads ready then),
+        # and the hero / champion it belongs to (the card of a unit that carries it; 0 while none is on the board)
+        ab, ability_card = np.zeros((2, ABILITY_FLOATS), np.float32), [0, 0]
+        cards = {o['nativeObjectId']: o['cardId'] for o in d['objects'] if o['owner'] == owner}
+        for a in controllers:
             k = a['controllerSlot'] - 1
-            ab[k] = (float(a['available']), float(a['buttonState'] in (2, 4)),
-                     min(max(a['remainingChargesRaw'], 0), 3) / 3 if a['remainingChargesRaw'] is not None else 0.0,
-                     (a['remainingCooldownMs'] / a['configuredCooldownMs']) if a['configuredCooldownMs'] else 0.0)
-        x['ability'] = ab
-        # plays in flight: own from the tap (landing - 22), the opponent's from 13 ticks before landing
+            pending = any(c['owner'] == owner and c.get('controller') == k and c.get('tap', tt) <= t < tt for tt, c in presses)
+            ab[k, :5] = (float(a['available']), float(a['buttonState'] in (2, 4)),
+                         min(max(a['remainingChargesRaw'], 0), 3) / 3 if a['remainingChargesRaw'] is not None else 0.0,
+                         (a['remainingCooldownMs'] / a['configuredCooldownMs']) if a['configuredCooldownMs'] else 0.0,
+                         float(pending))
+            state = a['buttonState'] if isinstance(a['buttonState'], int) else -1
+            ab[k, 5 + (state if 0 <= state < ABILITY_STATES - 1 else ABILITY_STATES - 1)] = 1.0
+            carried = [cards[i] for i in a.get('championObjectIds') or () if i in cards]
+            ability_card[k] = vocab(carried[0]) if carried else 0
+        x['ability'], x['ability_card'] = ab, np.array(ability_card, np.int64)
+        # plays in flight: own from the tap (landing - 22), the opponent's from when our queue shows them (opp_seen)
         # a tap the client is still holding for elixir is in flight from the tap ('tap', when known), not only from
         # landing - 22: otherwise the model saw nothing in flight and tapped again (refused)
         own_f = [(tt, c) for tt, c in landed if c['owner'] == owner and c.get('tap', tt - DEPLOY_DELAY) <= t < tt]
-        opp_f = [(tt, c) for tt, c in landed if c['owner'] == other and tt - OPP_VISIBLE <= t < tt][:2]
+        opp_f = [(tt, c) for tt, c in landed if c['owner'] == other and opp_seen(tt, c) <= t < tt][:2]
 
         def flight(tt, c):
             fx, fy = rotate(c['x'], c['y'], owner)
-            return [fx / 18000, fy / 32000, (tt - t) / DEPLOY_DELAY, COSTS.get(c['card_id'], 3) / 10]
+            return [fx / 18000, fy / 32000, (tt - t) / DEPLOY_DELAY, cost(c['card_id']) / 10]
         x['own_flight_card'] = np.array(vocab(own_f[0][1]['card_id']) if own_f else 0, np.int64)
         x['own_flight_float'] = np.array(flight(*own_f[0]) if own_f else [0.0] * 4, np.float32)
         x['opp_flight_card'] = np.array([vocab(c['card_id']) for _, c in opp_f] + [0] * (2 - len(opp_f)), np.int64)
@@ -468,9 +501,13 @@ class PlayerView:
         last_index = {c: k for k, c in enumerate(seen)}
         order = sorted(counted, key=lambda c: -last_index[c])[:8]
         x['opp_seen_card'] = np.array([vocab(c) for c in order] + [0] * (8 - len(order)), np.int64)
-        x['opp_seen_float'] = np.array([[counted[c] / 4, (len(seen) - 1 - last_index[c]) / 8, COSTS.get(c, 3) / 10]
+        x['opp_seen_float'] = np.array([[counted[c] / 4, (len(seen) - 1 - last_index[c]) / 8, cost(c) / 10]
                                         for c in order] + [[0.0] * 3] * (8 - len(order)), np.float32)
-        x['opp_hero_card'] = np.array([vocab(c) for c in self.opp_heroes] + [0] * (2 - len(self.opp_heroes)), np.int64)
+        theirs = {o['nativeObjectId']: o['cardId'] for o in d['objects'] if o['owner'] == other}
+        self.opp_heroes |= {theirs[i] for a in lean[other]['abilityRuntime'][:2] for i in a.get('championObjectIds') or ()
+                            if i in theirs}
+        heroes = sorted(self.opp_heroes)[:2]
+        x['opp_hero_card'] = np.array([vocab(c) for c in heroes] + [0] * (2 - len(heroes)), np.int64)
         crowns_now = [crowns(d, owner), crowns(d, other)]
         chef = self.chef
         cooking = [min(max(t - chef['last'][o], 0), 1200) / 20 / 30 if chef['has'][o] else 0.0 for o in (owner, other)]

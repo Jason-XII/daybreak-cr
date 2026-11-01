@@ -33,6 +33,33 @@ def test_training_runs_resumes_and_loads_for_play(tmp_path, monkeypatch):
 
 
 
+def test_validation_sets_every_n_steps_and_the_best_checkpoint(tmp_path, monkeypatch):
+    """31 Oct: --val_after leaves the newest battles out of training ('val_recent'); 'val_expert' is the roster players'
+    part of 'val'; --val_every validates inside a pass and best.pt keeps the lowest 'val' loss."""
+    root = dataset(tmp_path / 'data', monkeypatch)
+    manifest = json.loads((root / 'manifest.json').read_text())
+    days = {}
+    for e in manifest['entries']:  # games: 7 decisions (train), 11 (recent), 5 (the hash validation game)
+        if e['tag'] not in days:
+            days[e['tag']] = ('2026-10-01', '2026-10-25', '2026-10-02')[len(days)]
+        day = days[e['tag']]
+        e.update(battle_time=day + 'T10:00:00Z', expert=e['owner'] == 0)
+    (root / 'manifest.json').write_text(json.dumps(manifest))
+    settings = dict(train.DEFAULTS, epochs=2, batch=2, chunk=3, workers=0, card_dim=4, object_dim=4, conv_channels=4,
+                    conv_layers=1, core=8, attention_layers=0, device='cpu', val_every=2, val_after='2026-10-20')
+    out = tmp_path / 'run'
+    out.mkdir()
+    train.train(root, out, settings)
+    assert torch.load(out / 'latest.pt', weights_only=False)['step'] == 2 * 2 * 3 // 2   # only the first game trains
+    rows = [json.loads(line) for line in (out / 'metrics.jsonl').open() if '"val' in line]
+    assert {(r['split'], r['views']) for r in rows} == {('val', 2), ('val_expert', 1), ('val_recent', 2)}
+    steps = [r['step'] for r in rows if r['split'] == 'val']
+    assert len(steps) == len(set(steps)) and {2, 4, 6} <= set(steps)       # every 2 steps, after each pass, never twice
+    best = json.loads((out / 'best.json').read_text())
+    assert best['loss'] == min(r['loss'] for r in rows if r['split'] == 'val')
+    assert policy.load(out / 'best.pt')[2]['step'] == best['step']
+
+
 def test_tile_tune_starts_as_the_base_head_trains_heads_side_by_side_and_resumes(tmp_path, monkeypatch):
     import tile_tune
     root = dataset(tmp_path / 'data', monkeypatch)
@@ -176,3 +203,21 @@ def test_overlap_lets_the_sampler_tap_a_second_card():
     assert policy.playable(x, overlap=True).tolist() == [[True, False, True, True]], 'not the slot in flight'
     sc[0, 0] = 0.5                                           # 5 - 3 reserved + the hold's ~0.4 < 3
     assert not policy.playable(x, overlap=True).any() and policy.playable(x).all()
+
+
+def test_a_checkpoint_from_before_obs_v2_ignores_the_new_inputs_and_new_ones_read_them():
+    # inputs=1 (every checkpoint before 31 Oct): obs-v2's new values must not move its outputs; inputs=2 reads them
+    x, _ = arrays(3, 1)
+    torch.manual_seed(0)
+    for version, moved in ((1, False), (2, True)):
+        model = policy.Policy(policy.Config(vocab_size=5, card_dim=4, object_dim=8, conv_channels=8, conv_layers=2, core=8,
+                                            inputs=version)).eval()
+        base = {k: torch.as_tensor(v)[None] for k, v in x.items()}
+        changed = dict(base, ability=base['ability'].clone(), ability_card=torch.full_like(base['ability_card'], 3),
+                       hand_float=base['hand_float'].clone(), obj_float=base['obj_float'].clone())
+        changed['ability'][..., 4:] = 1
+        changed['hand_float'][..., 4:6] = 1
+        changed['obj_float'][..., C.OBJ_FLOAT_NAMES.index('ability_button')] = 1
+        with torch.no_grad():
+            a, b = model(base), model(changed)
+        assert torch.allclose(a['what'], b['what']) != moved and torch.allclose(a['which'], b['which']) != moved

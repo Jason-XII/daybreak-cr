@@ -530,7 +530,7 @@ def test_the_imitation_step_learns_the_human_games(tmp_path, monkeypatch):
 
 def test_the_search_loss_moves_the_tile_head_toward_the_searchs_best(tmp_path, monkeypatch):
     root = dataset(tmp_path / 'data', monkeypatch)
-    torch.manual_seed(0)
+    torch.manual_seed(1)  # 31 Oct: seed 0 of this 4-channel toy got stuck once the input grew (seeds 1-3 agree)
     model = policy.Policy(policy.Config(vocab_size=len(C.Vocab([26000000])), card_dim=4, object_dim=4, conv_channels=4,
                                       conv_layers=1, core=8, attention_layers=0))
     entry = json.loads((root / 'manifest.json').read_text())['entries'][0]

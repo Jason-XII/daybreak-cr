@@ -21,6 +21,8 @@ class Pending:
     x: int = 0
     y: int = 0
     charges: int = -1
+    used: int | None = None
+    cooldown_ms: int = 0
     acknowledged: bool = False
 
 
@@ -83,10 +85,12 @@ class LiveBudget:
         self.owner, self.overlap = owner, overlap
         self.ability_costs = tuple(0.0 if c is None else float(c) for c in ability_costs)
         self.pending = []
+        self.confirmed = []  # ability presses confirmed by the last update()
 
     def update(self, frame):
         """Reconcile a reader frame; returns the taps given up as unconfirmed (dropped, for the caller to log: a
         battle in progress must not stop over one missed receipt)."""
+        self.confirmed = []
         if frame['failure'] != 'none' or not frame.get('coherent', True) or not frame.get('queue_ok'):
             return []
         tick = frame['game_tick']
@@ -107,10 +111,17 @@ class LiveBudget:
                 paid = not ack and p.slot in hand and hand[p.slot] != p.card
             else:
                 button = next((a for a in me.get('abilities', ()) if a['controller_slot'] - 1 == p.slot), None)
-                paid = button is not None and (button['button'] not in (2, 4)
-                                               or button.get('charges', -1) != p.charges)
+                # from live play (28 Oct): a used count, fewer charges, a longer cooldown or the button's
+                # state 10 confirm the press; the button merely leaving 'ready' (the hero died, the bar emptied) does not
+                paid = button is not None and (
+                    (p.used is not None and button.get('used', p.used) > p.used)
+                    or (p.charges >= 0 and 0 <= button.get('charges', -1) < p.charges)
+                    or button.get('cooldown_ms', 0) > p.cooldown_ms
+                    or button['button'] == 10)
                 ack = None
             if paid:
+                if p.kind == 'ability':
+                    self.confirmed.append(p)
                 continue
             if not ack and tick > p.due + C.HOLD_TICKS + 10:
                 unconfirmed.append(p)  # most likely a missed touch; if it did land, the next frame's elixir shows it
@@ -146,5 +157,5 @@ class LiveBudget:
         return payment_tick(elixir, tick, self.pending, cost, ability=True)
 
     def commands(self):
-        return [(p.due, dict(owner=self.owner, card_id=p.card, x=p.x, y=p.y, tap=p.tap))
-                for p in self.pending if p.kind == 'card']
+        return [(p.due, dict(owner=self.owner, card_id=p.card, x=p.x, y=p.y, tap=p.tap)) if p.kind == 'card' else
+                (p.due, dict(kind='ability', owner=self.owner, controller=p.slot, tap=p.tap)) for p in self.pending]
