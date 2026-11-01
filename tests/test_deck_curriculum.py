@@ -37,9 +37,9 @@ def test_general_panel_reverses_decks_and_target_reference_uses_identical_matche
 def test_decision_allows_intermediate_regression_but_routes_final_blocks():
     assert decision('target',dict(general_score=.48,target_gain=.10))=='advance'
     assert decision('target',dict(general_score=.46,target_gain=.10))=='recover'
-    assert decision('target',dict(general_score=.55,target_gain=-.01))=='fallback'
+    assert decision('target',dict(general_score=.55,target_gain=-.01),improved=False)=='next-deck'
     assert decision('recovery',dict(general_score=.50,target_gain=None))=='advance'
-    assert decision('recovery',dict(general_score=.46,target_gain=None))=='fallback'
+    assert decision('recovery',dict(general_score=.46,target_gain=None))=='stop'
 
 
 def test_100_update_recovery_starts_from_candidate_but_evaluates_against_accepted(tmp_path,monkeypatch):
@@ -51,7 +51,7 @@ def test_100_update_recovery_starts_from_candidate_but_evaluates_against_accepte
     c=Curriculum(root);monkeypatch.setattr(c,'cancel',lambda:None);monkeypatch.setattr(c,'save',lambda:None)
     monkeypatch.setattr(c,'start_training',lambda:None)
     c.state.update(stage_index=1,stage=dict(index=1,mode='target',run=str(root/'old'),cap=103,
-                   policy_updates=100,best_target=None),accepted=dict(name='accepted',policy='/accepted',critic='/critic'))
+                   policy_updates=100,best_gain=None),accepted=dict(name='accepted',policy='/accepted',critic='/critic'))
     c.handle_gate(dict(general_score=.40,target_score=.40,target_reference_score=.20,target_gain=.20))
     s=c.state['stage'];assert s['mode']=='recovery' and s['cap']==20
     assert s['initial']['policy'].endswith('old/pool/v000103.pt')
@@ -61,7 +61,7 @@ def test_100_update_recovery_starts_from_candidate_but_evaluates_against_accepte
 def test_intermediate_regression_continues_candidate_without_rollback(tmp_path,monkeypatch):
     (tmp_path/'curriculum.json').write_text(json.dumps(dict(source='/source',general_floor=.47)))
     c=Curriculum(tmp_path);monkeypatch.setattr(c,'cancel',lambda:None);monkeypatch.setattr(c,'start_training',lambda:None)
-    c.state['stage']=dict(index=1,mode='target',run=str(tmp_path),cap=23,warmup=3,policy_updates=20,best_target=None)
+    c.state['stage']=dict(index=1,mode='target',run=str(tmp_path),cap=23,warmup=3,policy_updates=20,best_gain=None)
     c.handle_gate(dict(general_score=.40,target_score=.40,target_reference_score=.20,target_gain=.20))
     assert c.state['stage']['cap']==43 and c.state['phase']=='train'
     assert c.state['accepted']['name']=='general-v320'
@@ -106,3 +106,29 @@ def test_inline_task_assignment_is_complete_disjoint_and_resumes(tmp_path,monkey
         restarted=AssignedEvaluations(tmp_path,i)
         assert restarted.next(random.Random(1)) is None
     assert sorted(seen)==list(range(24))
+
+
+def test_acceptance_compares_gains_not_raw_scores(tmp_path,monkeypatch):
+    (tmp_path/'curriculum.json').write_text(json.dumps(dict(source='/source',general_floor=.47)))
+    c=Curriculum(tmp_path);monkeypatch.setattr(c,'start_training',lambda:None)
+    monkeypatch.setattr(c,'start_arena',lambda kind:None)
+    c.state['stage']=dict(index=6,mode='target',run=str(tmp_path),cap=60,warmup=0,policy_updates=60,best_gain=None)
+    gate=lambda score,gain:c.handle_gate(dict(general_score=.5,target_score=score,target_gain=gain))
+    gate(.638,.121);assert c.state['accepted']['name']=='stage6-v000060'
+    gate(.611,.167);assert c.state['accepted']['name']=='stage6-v000080'   # lower score, larger gain
+    gate(.700,.150);assert c.state['accepted']['name']=='stage6-v000080'   # higher score, smaller gain
+
+
+def test_stage_without_accepted_checkpoint_trains_next_weakest_deck(tmp_path,monkeypatch):
+    root=tmp_path;(root/'data').mkdir();(root/'stages').mkdir()
+    (root/'curriculum.json').write_text(json.dumps(dict(source='/source',general_floor=.47,general_bc='/general')))
+    (root/'settings-template.json').write_text('{}')
+    (root/'data/decks.json').write_text(json.dumps(dict(decks=[dict(deck=[dict(d=1)]),dict(deck=[dict(d=2)])])))
+    (root/'data/initial-ranking.json').write_text(json.dumps(dict(ranking=[dict(index=0),dict(index=1)])))
+    c=Curriculum(root)
+    for name in ('cancel','save','start_training'):monkeypatch.setattr(c,name,lambda:None)
+    c.state.update(stage_index=7,stage=dict(index=7,mode='target',run=str(root/'old'),target=0,cap=100,warmup=0,
+                   policy_updates=100,best_gain=None),accepted=dict(name='stage6-v000080',policy='/a',critic='/c'))
+    c.handle_gate(dict(general_score=.52,target_score=.49,target_reference_score=.50,target_gain=-.01))
+    s=c.state['stage'];assert s['index']==8 and s['target']==1 and s['initial']['name']=='stage6-v000080'
+    assert not c.state['stopped']

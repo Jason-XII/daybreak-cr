@@ -2,7 +2,7 @@
 
 PPO and all model evaluation/aggregation run inside Slurm allocations. Every 20 policy
 updates: evaluate without rolling back the candidate. After 100: rerank/advance, recover,
-or resume the previously authorized specialists if the target did not improve.
+or, if no checkpoint of the stage was accepted, train the next weakest deck of the same ranking.
 """
 import argparse
 import copy
@@ -28,11 +28,11 @@ def put(path, value):
     tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(value,indent=2)+'\n');tmp.replace(path)
 
 
-def decision(mode, summary, general_floor=.47):
+def decision(mode, summary, general_floor=.47, improved=True):
     if summary['general_score'] < general_floor:
-        return 'recover' if mode=='target' else 'fallback'
-    if mode=='target' and summary['target_gain'] <= 0:
-        return 'fallback'
+        return 'recover' if mode=='target' else 'stop'
+    if mode=='target' and not improved:
+        return 'next-deck'
     return 'advance'
 
 
@@ -116,13 +116,13 @@ class Curriculum:
             run=Path(self.state['stage']['run'])
             put(run/'paired-eval.json',dict(active=False));put(run/'eval.json',dict(matches=[]))
 
-    def new_stage(self,mode='target',initial=None):
+    def new_stage(self,mode='target',initial=None,skip=()):
         if not self.cfg.get('resident'):self.cancel()
         else:self.disable_inline()
         self.state['stage_index']+=1;i=self.state['stage_index']
         initial=initial or copy.deepcopy(self.state['accepted'])
         ranking=json.loads(Path(self.state['ranking']).read_text())
-        target=ranking['ranking'][0]['index'] if mode=='target' else None
+        target=next(r['index'] for r in ranking['ranking'] if r['index'] not in skip) if mode=='target' else None
         run=self.root/'stages'/f'{i:02d}-{mode}'
         for d in ('logs','pool','ckpt','league','init'):(run/d).mkdir(parents=True,exist_ok=True)
         settings=json.loads((self.root/'settings-template.json').read_text())
@@ -135,7 +135,7 @@ class Curriculum:
         put(run/'settings.json',settings);put(run/'champion.json',dict(name=initial['name'],path=initial['policy']))
         self.state.update(phase='train',stage=dict(index=i,mode=mode,run=str(run),target=target,
                           initial=initial,evaluation_reference=copy.deepcopy(self.state['accepted']),
-                          warmup=warmup,policy_updates=20,cap=warmup+20,best_target=None))
+                          warmup=warmup,policy_updates=20,cap=warmup+20,best_gain=None))
         self.event(f'stage {i} {mode}: target {target}; starting {initial["name"]}')
         self.start_training()
 
@@ -233,23 +233,19 @@ class Curriculum:
 
     def accepted(self,summary):
         s=self.state['stage'];run=Path(s['run']);cap=s['cap']
-        value=summary.get('target_score')
+        gain=summary.get('target_gain')
         if summary['general_score']<self.cfg['general_floor']:return
-        if s['mode']=='target' and (summary['target_gain']<=0 or (s['best_target'] is not None and value<s['best_target'])):return
-        s['best_target']=value
+        # Compare gains, not raw scores: the gain is paired with the stage-start model inside one gate, while the
+        # same model's raw target score moves several points between gates (31 Oct: 44.4-51.6%).
+        if s['mode']=='target' and (gain<=0 or (s.get('best_gain') is not None and gain<s['best_gain'])):return
+        s['best_gain']=gain
         self.state['accepted']=dict(name=f"stage{s['index']}-v{cap:06d}",policy=str(run/'pool'/f'v{cap:06d}.pt'),
                                     critic=str(run/'ckpt'/f'v{cap:06d}.pt'))
         self.event('accepted '+self.state['accepted']['name'])
 
-    def fallback(self,reason):
-        self.cancel();self.alert(reason+'; preserving candidate and resuming the two previously authorized specialists')
-        for name in ('gsram-r6e320-1029','giantgy-r6e320-1029'):
-            run=self.root.parent/name
-            with (run/'loop.out').open('a') as log:
-                p=subprocess.Popen([PYTHON,str(self.cfg['old_source']+'/loop.py'),str(run)],stdout=log,
-                                   stderr=subprocess.STDOUT,start_new_session=True)
-            (run/'loop.pid').write_text(str(p.pid)+'\n')
-        self.state.update(phase='fallback-specialists',stopped=reason);self.save()
+    def stop(self,reason):
+        self.cancel();self.alert(reason+'; curriculum stopped, all checkpoints kept')
+        self.state.update(phase='stopped',stopped=reason);self.save()
 
     def handle_gate(self,summary):
         s=self.state['stage']
@@ -258,13 +254,16 @@ class Curriculum:
         self.accepted(summary)
         if s['policy_updates']<100:
             s['policy_updates']+=20;s['cap']=s['warmup']+s['policy_updates'];self.state['phase']='train';self.start_training();return
-        action=decision(s['mode'],summary,self.cfg['general_floor'])
+        action=decision(s['mode'],summary,self.cfg['general_floor'],s.get('best_gain') is not None)
         if action=='recover':
             self.alert('General score below47% at100updates; starting100-update broad recovery from the final candidate')
             run=Path(s['run']);cap=s['cap']
             self.new_stage('recovery',dict(name=f"candidate-stage{s['index']}",policy=str(run/'pool'/f'v{cap:06d}.pt'),
                                            critic=str(run/'ckpt'/f'v{cap:06d}.pt')))
-        elif action=='fallback':self.fallback('No target improvement after100updates' if s['mode']=='target' else 'Broad recovery still regresses')
+        elif action=='next-deck':
+            self.alert(f"No accepted checkpoint for deck {s['target']} after100updates; training the next weakest deck")
+            self.new_stage(skip={s['target']})
+        elif action=='stop':self.stop('Broad recovery still regresses')
         else:self.start_arena('rank')
 
     def prune(self):
@@ -333,7 +332,7 @@ def main():
             import traceback
             traceback.print_exc();c.state['errors']=c.state.get('errors',0)+1;c.alert(str(e));c.save()
             if c.state['errors']>=3:
-                c.fallback('Controller failed three consecutive checks');break
+                c.stop('Controller failed three consecutive checks');break
         time.sleep(30)
 
 

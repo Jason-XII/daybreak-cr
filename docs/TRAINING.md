@@ -1036,15 +1036,19 @@ the same27 opponent decks/seeds/seats. Another1,000 paired-seat games compare ca
 the stage-start accepted champion on independent sampled full-pool decks. Both play at.05.
 Point-estimate general retention threshold47%; paired-seed bootstrap intervals are reported.
 Interim candidates can become the champion/KL anchor if the target improves and general score
-is at least47%. Their checkpoints and all20-update milestones are retained.
+is at least47%. Changed 31 October: a candidate must also have a target gain (paired against the stage-start model in
+the same gate) at least as large as the best accepted gain of the stage; the earlier rule compared raw target scores,
+which drift several points between gates. Their checkpoints and all20-update milestones are retained.
 
 After100: general score below47% triggers100 broad-deck recovery updates from the final candidate,
 evaluated against the last accepted champion, not against the degraded candidate. Success triggers
 a fresh7,560-game self-play reranking using the accepted model, then the new weakest deck.
-No target improvement, or unsuccessful recovery, preserves the candidate and resumes the two
-previously authorized paused specialists. `alerts.json`, `events.log`, `report.md` and per-stage
+Changed 31 October: if no checkpoint of a target stage was accepted, the next stage trains the next
+weakest deck of the same ranking (the model did not change, so no rerank). An unsuccessful recovery, or
+three consecutive controller exceptions, stops the curriculum and keeps every checkpoint. The earlier
+fallback to the paused Giant Skeleton / Battle Ram and Giant / Graveyard specialists was dropped. `alerts.json`, `events.log`, `report.md` and per-stage
 evaluation artifacts record every decision; these are local reports, not push notifications.
-Slurm jobs retry up to five times; three consecutive controller exceptions trigger that fallback.
+Slurm jobs retry up to five times.
 At the24-hour limit the controller cancels its jobs and preserves all results.
 
 ### 30 October correction: retain allocations and evaluate inline
