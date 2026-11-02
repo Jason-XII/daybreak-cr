@@ -40,7 +40,281 @@
     "goblinstein_ability": 2.0
   },
   "build": "160402020",
+  "character_join": "Preserved character-to-ability aliases; October IceWizardHero and ElectroWizardHero name joins",
+  "characters": {
+    "1222493517": {
+      "ability_id": "BerserkerHeroAbility",
+      "card_id": 26000102,
+      "elixir_cost": 3.0,
+      "form": 2
+    },
+    "130283371": {
+      "ability_id": "Musketeer_hero_Ability",
+      "card_id": 26000014,
+      "elixir_cost": 3.0,
+      "form": 2
+    },
+    "1369946620": {
+      "ability_id": "goblinstein_ability",
+      "card_id": 26000099,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "1741956296": {
+      "ability_id": "IceWizardHero_ability",
+      "card_id": 26000023,
+      "character_name": "IceWizardHero",
+      "elixir_cost": 2.0,
+      "join_source": "October unit character name -> matching October ability name"
+    },
+    "1949692961": {
+      "ability_id": "BarbLogHeroAbility",
+      "card_id": 28000015,
+      "elixir_cost": 1.0,
+      "form": 2
+    },
+    "2014338823": {
+      "ability_id": "ElectroWizardHero_Ability",
+      "card_id": 26000042,
+      "character_name": "ElectroWizardHero",
+      "elixir_cost": 2.0,
+      "join_source": "October unit character name -> matching October ability name"
+    },
+    "2057776225": {
+      "ability_id": "ValkyrieHero_Ability",
+      "card_id": 26000011,
+      "elixir_cost": 3.0,
+      "form": 2
+    },
+    "2124818796": {
+      "ability_id": "MegaMinion_Teleport_Ability",
+      "card_id": 26000039,
+      "elixir_cost": 2.0,
+      "form": 2
+    },
+    "2145947791": {
+      "ability_id": "BossBandit_ability",
+      "card_id": 26000103,
+      "elixir_cost": 1.0,
+      "form": 0
+    },
+    "2349794045": {
+      "ability_id": "ChampGuardianAbility",
+      "card_id": 26000093,
+      "elixir_cost": 3.0,
+      "form": 0
+    },
+    "2621712316": {
+      "ability_id": "EliteArcherHero_Ability",
+      "card_id": 26000062,
+      "elixir_cost": 2.0,
+      "form": 2
+    },
+    "2709822912": {
+      "ability_id": "Tombstone_hero_Ability",
+      "card_id": 27000009,
+      "elixir_cost": 5.0,
+      "form": 2
+    },
+    "2741075011": {
+      "ability_id": "WizardHeroAbility",
+      "card_id": 26000017,
+      "elixir_cost": 1.0,
+      "form": 2
+    },
+    "2979504115": {
+      "ability_id": "IceGolemiteHero_Ability",
+      "card_id": 26000038,
+      "elixir_cost": 2.0,
+      "form": 2
+    },
+    "3102473011": {
+      "ability_id": "BalloonHero_Ability",
+      "card_id": 26000006,
+      "elixir_cost": 2.0,
+      "form": 2
+    },
+    "3126564425": {
+      "ability_id": "MiniPekkHeroAbility",
+      "card_id": 26000018,
+      "elixir_cost": 1.0,
+      "form": 2
+    },
+    "34000000": {
+      "ability_id": "Knight_hero_Ability",
+      "card_id": 26000000,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "34000003": {
+      "ability_id": "GiantHero_Ability",
+      "card_id": 26000003,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "34000006": {
+      "ability_id": "BalloonHero_Ability",
+      "card_id": 26000006,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "34000012": {
+      "ability_id": "ValkyrieHero_Ability",
+      "card_id": 26000011,
+      "elixir_cost": 3.0,
+      "form": 0
+    },
+    "34000014": {
+      "ability_id": "Musketeer_hero_Ability",
+      "card_id": 26000014,
+      "elixir_cost": 3.0,
+      "form": 0
+    },
+    "34000016": {
+      "ability_id": "MiniPekkHeroAbility",
+      "card_id": 26000018,
+      "elixir_cost": 1.0,
+      "form": 0
+    },
+    "34000017": {
+      "ability_id": "WizardHeroAbility",
+      "card_id": 26000017,
+      "elixir_cost": 1.0,
+      "form": 0
+    },
+    "34000026": {
+      "ability_id": "DarkPrinceHero_Ability",
+      "card_id": 26000027,
+      "elixir_cost": 3.0,
+      "form": 0
+    },
+    "34000035": {
+      "ability_id": "BowlerHeroAbility",
+      "card_id": 26000034,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "34000036": {
+      "ability_id": "IceGolemiteHero_Ability",
+      "card_id": 26000038,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "34000037": {
+      "ability_id": "MegaMinion_Teleport_Ability",
+      "card_id": 26000039,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "34000062": {
+      "ability_id": "EliteArcherHero_Ability",
+      "card_id": 26000062,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "34000077": {
+      "ability_id": "MightyMinerLaneSwitch",
+      "card_id": 26000065,
+      "elixir_cost": 1.0,
+      "form": 0
+    },
+    "34000086": {
+      "ability_id": "SkeletonKing",
+      "card_id": 26000069,
+      "elixir_cost": 2.0,
+      "form": 0
+    },
+    "34000092": {
+      "ability_id": "GoldenKnightChain",
+      "card_id": 26000074,
+      "elixir_cost": 1.0,
+      "form": 0
+    },
+    "34000093": {
+      "ability_id": "ArcherQueenRapid",
+      "card_id": 26000072,
+      "elixir_cost": 1.0,
+      "form": 0
+    },
+    "34000098": {
+      "ability_id": "Deflect",
+      "card_id": 26000077,
+      "elixir_cost": 1.0,
+      "form": 0
+    },
+    "34000114": {
+      "ability_id": "ArcherQueenRapid",
+      "card_id": 26000072,
+      "character_name": "ArcherQueen_Chess",
+      "elixir_cost": 1.0,
+      "join_source": "CHARACTER.ArcherQueen_Chess.Ability"
+    },
+    "3434485527": {
+      "ability_id": "GoblinHero_Ability",
+      "card_id": 26000002,
+      "elixir_cost": 1.0,
+      "form": 2
+    },
+    "35000011": {
+      "ability_id": "Tombstone_hero_Ability",
+      "card_id": 27000009,
+      "elixir_cost": 5.0,
+      "form": 0
+    },
+    "3565953160": {
+      "ability_id": "GoblinHero_Ability",
+      "card_id": 26000002,
+      "elixir_cost": 1.0,
+      "form": 0
+    },
+    "3857463105": {
+      "ability_id": "Knight_hero_Ability",
+      "card_id": 26000000,
+      "elixir_cost": 2.0,
+      "form": 2
+    },
+    "4038962785": {
+      "ability_id": "DarkPrinceHero_Ability",
+      "card_id": 26000027,
+      "elixir_cost": 3.0,
+      "form": 2
+    },
+    "4047250230": {
+      "ability_id": "goblinstein_ability",
+      "card_id": 26000099,
+      "character_name": "goblinstein_doctor",
+      "elixir_cost": 2.0,
+      "join_source": "CHARACTER.goblinstein_doctor.Ability"
+    },
+    "483711865": {
+      "ability_id": "GiantHero_Ability",
+      "card_id": 26000003,
+      "elixir_cost": 2.0,
+      "form": 2
+    },
+    "729590885": {
+      "ability_id": "DarkPrinceHero_Ability",
+      "card_id": 26000027,
+      "character_name": "DarkPrinceHero_Walking",
+      "elixir_cost": 3.0,
+      "join_source": "CHARACTER.DarkPrinceHero_Walking.Ability"
+    },
+    "744940923": {
+      "ability_id": "BowlerHeroAbility",
+      "card_id": 26000034,
+      "elixir_cost": 2.0,
+      "form": 2
+    },
+    "932239209": {
+      "ability_id": "BerserkerHeroAbility",
+      "card_id": 26000102,
+      "elixir_cost": 3.0,
+      "form": 0
+    }
+  },
   "data": "d22",
+  "schema": 2,
+  "source_export_sha256": "7128daf82f4f0831fc98010dc755c608dcff80f2cd42a7c77abd31bcb693d5c5",
   "sources": {
     "character_abilities.csv": "87bb23b7626156ea585287124c0472085e126673d6583f5dc6599d374a6a64be",
     "characters/archer_queen.toml": "2c81efbaeda451b2c4c3da5c8dc98747d5eadf28f6f5e947a9344f6fea6c7b2c",
@@ -72,5 +346,6 @@
     "characters/monk.toml": "bf6bf8f7857b460226397da4151d45e58e1a7e0dc480a2a04974f87358fdf5b7",
     "characters/skeleton_king.toml": "ad23f6316bc250666237db8b4cf733f10cdf522eef266942e30e5d6b5b159242",
     "characters/superhogrider_terry.toml": "9dd512ae16508e3798fcf06f6d135f9626753ead3c1d624f8542f82589590136"
-  }
+  },
+  "unit_tables_sha256": "7c6b06a54be501735fd6639bf33e31a866d1d64f2cccdf46621dcf079acbcf4a"
 }

@@ -486,7 +486,9 @@ class Commands:
             self.last_tick = state.tick
         flying = [(p['due'], {'owner': p['owner'], 'card_id': p['card'], 'x': p['x'], 'y': p['y'], 'tap': p['tap']})
                   for p in engine.pending if p.get('card') is not None]
-        return self.landed + flying
+        presses = [(p['due'], {'kind': 'ability', 'owner': p['owner'], 'controller': p['controller'], 'tap': p['tap']})
+                   for p in engine.pending if p['slot'] == ABILITY]
+        return self.landed + flying + presses
 
 
 class Inputs:
@@ -494,14 +496,9 @@ class Inputs:
     raw record once per decision, a PlayerView per player."""
 
     def __init__(self, engine, match, vocabs, legal):
-        record = engine.record()
         self.engine, self.commands = engine, Commands()
-        self.views = {}
-        for owner, vocab in vocabs.items():
-            other = 1 - owner
-            forms = [c.get('el', 0) for c in match['battle'][f'deck{other}']['sp']]  # 1 evolution, 2 hero (as replays)
-            heroes = C.opponent_heroes(record, forms, owner)
-            self.views[owner] = C.PlayerView(owner, vocab, heroes, legal)
+        self.views = {owner: C.PlayerView(owner, vocab, legal, [c.get('el', 0) for c in match['battle'][f'deck{owner}']['sp']])
+                      for owner, vocab in vocabs.items()}  # form flags: 1 evolution, 2 hero (as replays)
 
     def __call__(self, state):
         record, issued = self.engine.record(), self.commands.update(state, self.engine)
