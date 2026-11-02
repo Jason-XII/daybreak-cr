@@ -1017,7 +1017,7 @@ The first target is hero Goblins, evolved Valkyrie/Executioner, Hog, Ice Spirit,
 Tornado. The full October human count found 161,986 replays / 323,972 player-deck appearances;
 28 unordered eight-card sets meet 0.5% usage, covering 25.8% of appearances. Forms are the modal
 human configuration for each card set. The v320 self-play panel used 20 games per distinct pair,
-ten seeds and both seats, 7,560 total. Results: `analysis/common-decks-v320-20261029/`.
+ten seeds and both seats, 7,560 total. Results: `analysis/common-decks/`.
 
 Training uses `deck_frac=.6` and `independent_decks=true`: 60% target, 40% independently drawn
 other human decks, excluding the target card set from that broad portion. Opponents are independent
