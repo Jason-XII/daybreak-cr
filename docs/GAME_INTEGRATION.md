@@ -74,6 +74,20 @@ Times from one play with the console's gesture (two 16 ms touches, 8 ms apart):
   issue ticks spread over three ticks.
 - A command's execution is fixed once issued: nothing we do later changes when it lands.
 
+### The server's turns (Arron's measurement, 20-21 Oct, official client 160402012, ~450 plays; not checked on Nulls)
+
+- The server sends ticks in turns of 10, one turn every 500 ms; the received tick R (battle+0x64) always ends in 9.
+- The issue tick is set by the server, by when the command reaches it. Touch-up after turn R arrives: issue R-17 ... R-11,
+  rising about a tick per 50 ms, then **R-8 flat** until the next turn (any command that misses the next turn gets R-8).
+- So one landing tick in ten is certain: issue R-8, landing R+13 (a tick ending in 2). A touch 400-440 ms after turn R's
+  expected arrival got R-8 in 109 of 110 plays; less sure when turn R itself came 40+ ms late. The window moves with the
+  round trip (~330-470 ms became ~400-490 ms in one evening): measure it live.
+- Why it matters: 1,370 Ice Golem + Skeletons clutches against a lone Hog still clutch 100% on time, but only 33-37%
+  with one card a tick off and 13-25% two ticks off. Ordinary plays hardly care.
+- Arron's "certain timing" (clapha-train `il.duel --timing certain`): every play lands on the first tick ending in 2 at
+  least 22 ticks after the decision, the model is told that delay, and live the bot holds the touch for the R-8 slot.
+  Live: 167 of 182 clutch attempts succeeded; 14 of the 15 misses were a card slipping a tick (38 of 364 cards slipped).
+
 ## 4. The hand
 
 - Four slots; the deck's other four cards wait in the cycle, the first of them shown as "Next:".
@@ -275,3 +289,4 @@ In ordinary games, with the bot playing: `il/timing.py` (lateness of every play)
   the August client; its double / triple elixir periods are not measured on our build yet (section 13).
 - 2026-10-11: section 9, the opponent's evolution and hero slots: what is readable when (515 recorded battles);
   the out-of-battle deck record (friendly / Training Camp only so far) added as open.
+- 2026-11-02: section 3 gained the server-turn timing (from the retired PRECISE_TIMING.md).

@@ -96,7 +96,7 @@ REGEN = 10000 / 56  # raw elixir per tick (1 per 2.8 s); x2 after tick 2400, x3 
 # A tap the elixir bar cannot pay for yet is held by the client until it can, for at most HOLD_TICKS, then issued (it
 # lands ~22 ticks later); held longer, it is dropped. Measured live on Nulls (2026-10-12, 18 short taps): every tap whose
 # shortfall regenerated within 22.4 ticks landed (36-46 ticks after the tap), none needing 24+ ticks did. 22, not 23:
-# over 136 v350/v400 games, holds over 22 ticks failed 8 of 28 times, up to 22 under 2% (docs/LIVE_LOSS_AUDIT.md).
+# over 136 v350/v400 games, holds over 22 ticks failed 8 of 28 times, up to 22 under 2%.
 HOLD_TICKS = 22
 
 
