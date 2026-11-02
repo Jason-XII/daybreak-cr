@@ -63,3 +63,22 @@ def test_object_kind_and_hit_points_follow_what_the_live_reader_reports():
     assert C.hit_points(dummy) == (None, None) and C.object_kind(dummy) == 'timed'
     assert C.object_kind(o(5000102, None, None)) == 'timed' and C.hit_points(o(5000103, 900, 200)) == (None, None)
     assert C.hit_points(o(5000104, 390, 195)) == (390, 195)       # an evolved Bat healed to twice its maximum
+
+
+def test_a_second_own_card_in_flight_and_the_evolved_musketeers_snipe_shots():
+    # 1 Nov: two of our plays on the way are two inputs (the second was invisible), and snipeAmmo reaches snipe_ammo
+    vocab = C.Vocab(DECK)
+    view = C.PlayerView(0, vocab, own_forms=FORMS)
+    plays = [(130, {'owner': 0, 'card_id': KNIGHT, 'x': 9000, 'y': 8000}),
+             (135, {'owner': 0, 'card_id': ARCHERS, 'x': 5000, 'y': 8000})]
+    rec = record(115, [unit(7, 0, MUSKETEER)])
+    rec['units'][0]['snipeAmmo'] = 2
+    x = view.step(rec, plays)
+    assert x['own_flight_card'] == vocab(KNIGHT) and x['own_flight2_card'] == vocab(ARCHERS)
+    assert abs(x['own_flight2_float'][2] - (135 - 115) / C.DEPLOY_DELAY) < 1e-6
+    row = [i for i, c in enumerate(x['obj_card']) if c == vocab(MUSKETEER)][0]
+    assert abs(x['obj_float'][row, C.OBJ_FLOAT_NAMES.index('snipe_ammo')] - 2 / 3) < 1e-6
+    x = view.step(record(131, [unit(7, 0, MUSKETEER)]), plays)       # the first landed: one left, no second
+    assert x['own_flight_card'] == vocab(ARCHERS) and x['own_flight2_card'] == 0
+    row = [i for i, c in enumerate(x['obj_card']) if c == vocab(MUSKETEER)][0]
+    assert x['obj_float'][row, C.OBJ_FLOAT_NAMES.index('snipe_ammo')] == 0   # no reading: 0

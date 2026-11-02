@@ -423,6 +423,10 @@ class LiveRecords:
             row['kingAwake'] = int(e.get('kind') or 0) != 12      # kind 12 asleep, 13 awake (clapha-engine observe.py)
         elif us.get('daggers', -1) >= 0:
             row['daggers'] = int(us['daggers'])                   # Dagger Duchess's daggers left
+        if us.get('snipe_ammo', -1) >= 0:
+            # the evolved Musketeer's snipe shots left: the client reader must read it (its slot-10 action +0x64, as
+            # clapha-engine observe.py does since 10ae8ee); a reader without it leaves snipe_ammo 0, as before
+            row['snipeAmmo'] = int(us['snipe_ammo'])
         if character.get('spawns') and us.get('spawn_ms', -1) >= 0:
             row['spawns'] = character['spawns']
             row['spawnTimerMs'] = us['spawn_ms']
