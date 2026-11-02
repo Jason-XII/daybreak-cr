@@ -195,9 +195,11 @@ def screen(serial):
     def pixel(x, y):
         i = len(raw) - w * h * 4 + (y * w + x) * 4
         return raw[i:i + 3]
+    for y in (BUTTON[1], 2000):  # 2000: still yellow when a 'daily extra reward' line covers BUTTON (one client, 2 Nov)
+        r, g, b = pixel(BUTTON[0], y)
+        if r > 200 and g > 130 and b < 80:
+            return 'home'
     r, g, b = pixel(*BUTTON)
-    if r > 200 and g > 130 and b < 80:
-        return 'home'
     if b > 180 and r < 120:
         return 'results'
     r, g, b = pixel(*PAIRED_OK)

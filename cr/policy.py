@@ -41,6 +41,12 @@ class Config:
     inputs: int = 1        # 2 (obs-v2, 31 Oct): ability rows of 17 floats and the card of each button, hero / evolution form
                            # in the hand, our ability carriers flagged. 1: every checkpoint before obs-v2; it is given the
                            # obs-v2 inputs with those new values blanked, as it was trained (see v1_inputs)
+    # arch 2 (2 Nov, TokenPolicy): one transformer over every input as a token, tiles scored by tile queries
+    arch: int = 1
+    width: int = 384       # arch 2: token width, layers, heads (64 dimensions each) and tile cross-attention blocks
+    layers: int = 10
+    heads: int = 6
+    tile_layers: int = 2
 
 
 class ResBlock(nn.Module):
@@ -324,6 +330,175 @@ class Policy(nn.Module):
 
 
 
+class Bias(nn.Module):
+    """Attention bias from where two tokens are: per head, by dx, dy and distance in quarter tiles. Starts at zero (plain
+    attention); a pair where either token has no position gets none."""
+    def __init__(self, heads):
+        super().__init__()
+        self.dx, self.dy, self.dist = nn.Embedding(257, heads), nn.Embedding(257, heads), nn.Embedding(257, heads)
+        for e in (self.dx, self.dy, self.dist):
+            nn.init.zeros_(e.weight)
+
+    def forward(self, a, b, known_a, known_b, present_b):
+        """a [N, Q, 2], b [N, K, 2] in tiles -> [N, heads, Q, K] float: the bias, -inf for keys not present."""
+        d = (a[:, :, None] - b[:, None]).float() * 4
+        dx = d[..., 0].round().long().clamp(-128, 128) + 128
+        dy = d[..., 1].round().long().clamp(-128, 128) + 128
+        dist = d.norm(dim=-1).round().long().clamp(max=256)
+        bias = (self.dx(dx) + self.dy(dy) + self.dist(dist)) * (known_a[:, :, None] & known_b[:, None])[..., None]
+        return bias.permute(0, 3, 1, 2).masked_fill(~present_b[:, None, None], float('-inf'))
+
+
+class Block(nn.Module):
+    """A pre-norm transformer block (feed-forward 4x, GELU); with `cross`, its queries attend to a separate memory."""
+    def __init__(self, width, heads, cross=False):
+        super().__init__()
+        self.heads = heads
+        self.norm, self.ff_norm = nn.LayerNorm(width), nn.LayerNorm(width)
+        self.memory_norm = nn.LayerNorm(width) if cross else None
+        self.q, self.kv, self.o = nn.Linear(width, width), nn.Linear(width, 2 * width), nn.Linear(width, width)
+        self.ff = nn.Sequential(nn.Linear(width, 4 * width), nn.GELU(), nn.Linear(4 * width, width))
+
+    def forward(self, q, memory, mask):
+        h = self.norm(q)
+        m = h if self.memory_norm is None else self.memory_norm(memory)
+        N, Q, D = h.shape
+        query = self.q(h).view(N, Q, self.heads, -1).transpose(1, 2)
+        key, value = self.kv(m).view(N, m.shape[1], 2, self.heads, -1).unbind(2)
+        a = F.scaled_dot_product_attention(query, key.transpose(1, 2), value.transpose(1, 2), attn_mask=mask.to(query.dtype))
+        q = q + self.o(a.transpose(1, 2).reshape(N, Q, D))
+        return q + self.ff(self.ff_norm(q))
+
+
+FIXED = 24  # TokenPolicy's tokens before the objects: summary, hand 4, cycle 4, ability 2, in flight 3, seen 8, heroes 2
+HAND, FLIGHT = slice(1, 5), slice(11, 14)
+
+
+class TokenPolicy(nn.Module):
+    """arch 2 (2 Nov): every input is a token of one transformer (objects, the hand, the cycle, the ability buttons, plays
+    in flight, the opponent's seen cards and heroes, and a summary token carrying the scalars), attention biased by where
+    two tokens are. The summary token feeds the LSTM; a hand card is chosen by pointing at its token; the tiles are 576
+    queries (tile + core + the chosen card's token) attending to the tokens. Same outputs and tiles() as Policy."""
+    def __init__(self, config: Config, effect_table=None, card_table=None):
+        super().__init__()
+        c = self.config = config
+        d, D = c.card_dim, c.width
+        if c.card_stats:
+            table = torch.zeros(c.vocab_size, c.card_stats) if card_table is None else torch.as_tensor(card_table)
+            self.card = CardEmbedding(c.vocab_size, d, table)
+        else:
+            self.card = IdEmbedding(c.vocab_size, d, padding_idx=0)
+        self.side = nn.Embedding(3, d, padding_idx=0)
+        self.kind = nn.Embedding(6, d, padding_idx=0)
+        table = torch.zeros(c.vocab_size, c.effect_fields) if effect_table is None else torch.as_tensor(effect_table)
+        self.register_buffer('effect_table', table.float())
+        self.effect = mlp(d + 1 + c.effect_fields, d, d)
+        self.object = mlp(3 * d + C.OBJ_FLOATS, D, D)
+        self.summary = mlp(C.SCALARS, D, D)
+        self.hand = mlp(2 * d + C.HAND_FLOATS, D, D)
+        self.cycle = nn.Linear(d, D)
+        self.ability = mlp(d + C.ABILITY_FLOATS, D, D)
+        self.flight = mlp(d + 4, D, D)
+        self.seen = mlp(d + 3, D, D)
+        self.hero = nn.Linear(d, D)
+        self.slot = nn.Parameter(torch.zeros(FIXED + 1, D))  # which token it is (the last row: any object)
+        self.bias = Bias(c.heads)
+        self.encoder = nn.ModuleList([Block(D, c.heads) for _ in range(c.layers)])
+        self.norm = nn.LayerNorm(D)
+        self.lstm = nn.LSTM(D, c.core, batch_first=True)
+        self.what = nn.Linear(c.core, 4)
+        self.which = nn.Linear(c.core, D)  # the query that points at a hand card's token
+        self.value = mlp(c.core + C.SCALARS, 256, 1)
+        if c.next_play:
+            self.next_when = nn.Linear(c.core, len(C.NEXT_EDGES) + 1)
+            self.next_which = nn.Linear(c.core, D)
+        self.cells = nn.Parameter(torch.randn(CELLS, D) * 0.02)
+        self.tile_query = nn.Linear(c.core, D)
+        self.tile_bias = Bias(c.heads)
+        self.tile_blocks = nn.ModuleList([Block(D, c.heads, cross=True) for _ in range(c.tile_layers)])
+        self.tile_norm = nn.LayerNorm(D)
+        self.tile = nn.Linear(D, 1)
+        ys, xs = torch.meshgrid(torch.arange(H) + 0.5, torch.arange(W) + 0.5, indexing='ij')
+        self.register_buffer('cell_xy', torch.stack([xs.flatten(), ys.flatten()], -1), persistent=False)
+
+    def forward(self, x, state=None):
+        """x: dict of [B, T, ...] tensors -> what [B, T, 4], which [B, T, 4], core [B*T, core], value [B, T], state, and
+        for tiles(): tokens [B*T, L, width], xy [B*T, L, 2] (tiles), known, present [B*T, L]."""
+        B, T = x['scalars'].shape[:2]
+        N, D = B * T, self.config.width
+        f = {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()}
+        card = self.card
+        eff = torch.cat([card(f['eff_id']), f['eff_left'].unsqueeze(-1),
+                         self.effect_table[known(f['eff_id'], self.effect_table.shape[0])]], -1)
+        eff = (self.effect(eff) * (f['eff_id'] > 0).unsqueeze(-1)).sum(-2)
+        objects = self.object(torch.cat([card(f['obj_card']), card(f['obj_data']) + self.side(f['obj_side']) +
+                                         self.kind(f['obj_kind']), eff, f['obj_float']], -1))
+        flight_card = torch.cat([f['own_flight_card'].reshape(N, 1), f['opp_flight_card']], 1)
+        flight_float = torch.cat([f['own_flight_float'].reshape(N, 1, 4), f['opp_flight_float']], 1)
+        fixed = torch.cat([
+            self.summary(f['scalars']).unsqueeze(1),
+            self.hand(torch.cat([card(f['hand_card']), card(f['mirror_card']), f['hand_float']], -1)),
+            self.cycle(card(f['cycle_card'])),
+            self.ability(torch.cat([card(f['ability_card']), f['ability']], -1)),
+            self.flight(torch.cat([card(flight_card), flight_float], -1)),
+            self.seen(torch.cat([card(f['opp_seen_card']), f['opp_seen_float']], -1)),
+            self.hero(card(f['opp_hero_card']))], 1) + self.slot[:FIXED]
+        tokens = torch.cat([fixed, objects + self.slot[FIXED]], 1)
+        yes = torch.ones(N, 5, dtype=torch.bool, device=tokens.device)  # summary and hand: always (ability below too)
+        present = torch.cat([yes, f['cycle_card'] > 0, yes[:, :2], flight_card > 0, f['opp_seen_card'] > 0,
+                             f['opp_hero_card'] > 0, f['obj_side'] > 0], 1)
+        scale = torch.tensor([W, H], dtype=torch.float32, device=tokens.device)
+        none = lambda n: tokens.new_zeros(N, n, 2, dtype=torch.float32)  # noqa: E731
+        xy = torch.cat([none(11), flight_float[..., :2].float(), none(10), f['obj_float'][..., :2].float()], 1) * scale
+        located = present.clone()
+        located[:, :11], located[:, 14:FIXED] = False, False
+        mask = self.bias(xy, xy, located, located, present)
+        for block in self.encoder:
+            tokens = block(tokens, None, mask)
+        tokens = self.norm(tokens)
+        core, state = self.lstm(tokens[:, 0].reshape(B, T, D), state)
+        flat_core = core.reshape(N, -1)
+        hand = tokens[:, HAND]
+        empty = f['hand_card'] == 0
+        point = lambda q: (torch.einsum('nd,nkd->nk', q, hand) / math.sqrt(D)).masked_fill(empty, float('-inf'))  # noqa: E731
+        which = point(self.which(flat_core))
+        what = self.what(core)
+        ability_ready = f['ability'][:, :, 1] > 0
+        what = what.masked_fill(torch.cat([torch.zeros_like(ability_ready[:, :1]), empty.all(-1, keepdim=True),
+                                           ~ability_ready], -1).reshape(B, T, 4), float('-inf'))
+        value = self.value(torch.cat([core, x['scalars']], -1)).squeeze(-1)
+        out = {'what': what, 'which': which.reshape(B, T, 4), 'core': flat_core, 'value': value, 'state': state,
+               'tokens': tokens, 'xy': xy, 'known': located, 'present': present}
+        if self.config.next_play:
+            out['next_when'] = self.next_when(core)
+            out['next_which'] = point(self.next_which(flat_core)).reshape(B, T, 4)
+        return out
+
+    def tiles(self, out, x, slot):
+        """Tile scores [N, CELLS] for the card in hand slot `slot` [N], illegal tiles -inf when x has legal masks."""
+        tokens = out['tokens']
+        N, D = tokens.shape[0], self.config.width
+        chosen = tokens[:, HAND].gather(1, slot.view(N, 1, 1).expand(-1, 1, D))
+        q = self.cells + (self.tile_query(out['core']).unsqueeze(1) + chosen)
+        everywhere = torch.ones(N, CELLS, dtype=torch.bool, device=q.device)
+        mask = self.tile_bias(self.cell_xy.expand(N, -1, -1), out['xy'], everywhere, out['known'], out['present'])
+        for block in self.tile_blocks:
+            q = block(q, tokens, mask)
+        # the scores in fp32 (the 16 Oct bf16 ties: see Policy.tiles); the blocks before may run in bf16
+        with torch.autocast(q.device.type, enabled=False):
+            scores = self.tile(self.tile_norm(q.float())).squeeze(-1)
+        if 'legal' in x:
+            legal = x['legal'].reshape(N, 4, CELLS).gather(1, slot.view(N, 1, 1).expand(-1, 1, CELLS)).squeeze(1)
+            scores = scores.masked_fill(~legal, float('-inf'))
+        return scores
+
+
+def build(config, effect_table=None, card_table=None):
+    return (TokenPolicy if config.arch == 2 else Policy)(config, effect_table, card_table)
+
+
+TILE_KEYS = ('core', 'grid', 'tokens', 'xy', 'known', 'present')  # what tiles() reads from a forward pass (either network)
+
 # ---- playing -------------------------------------------------------------------------------------------------------------
 CARD = 4  # actions: WAIT, PLAY (never sampled as such), ABILITY1, ABILITY2, then CARD + hand slot * CELLS + cell
 ABILITY_EXPLORE = 0.0  # 28 Oct: off (was 0.01); PPO learned to leave presses to the random floor, which deployment lacks
@@ -333,7 +508,7 @@ def load(checkpoint, device='cpu'):
     """-> (model in eval mode, its vocabulary, the saved dict). Checkpoints hold plain dicts (config, weights, vocabulary),
     so they load whatever module the code lives in."""
     saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
-    model = Policy(Config(**saved['config']))
+    model = build(Config(**saved['config']))
     model.load_state_dict(saved['model'])
     return model.to(device).eval(), C.Vocab(saved['vocab']), saved
 
@@ -440,7 +615,7 @@ def which_logp(which, x, overlap=False):
 
 def tile_logp(model, out, x, slot, rows=None):
     """log p(cell | slot) [n, CELLS] for the decisions `rows` (default all) of a forward pass `out` and its flat inputs x."""
-    sub = out if rows is None else {k: out[k][rows] for k in ('core', 'grid', 'tokens') if k in out}
+    sub = out if rows is None else {k: out[k][rows] for k in TILE_KEYS if k in out}
     sx = {k: x[k] if rows is None else x[k][rows] for k in ('hand_card', 'legal', 'obj_side', 'obj_float') if k in x}
     return _log_softmax(model.tiles(sub, sx, slot))
 
@@ -448,8 +623,8 @@ def tile_logp(model, out, x, slot, rows=None):
 def flat(out, x):
     """A forward pass on [B, T] inputs -> its heads and inputs as [B * T, ...]."""
     N = out['core'].shape[0]
-    return ({'what': out['what'].reshape(N, 4), 'which': out['which'].reshape(N, 4), 'core': out['core'],
-             'grid': out['grid'], **({'tokens': out['tokens']} if 'tokens' in out else {})}, {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()})
+    return ({'what': out['what'].reshape(N, 4), 'which': out['which'].reshape(N, 4), **{k: out[k] for k in TILE_KEYS if k in out}},
+            {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()})
 
 
 def _gumbel_argmax(logp):
@@ -543,6 +718,8 @@ class Agent:
 
 def convolution_layout(model):
     """Match IL's convolution layout on CUDA; keep the fp32 tile head unchanged."""
+    if not hasattr(model, 'convs'):  # TokenPolicy: no convolutions
+        return
     for conv in [*model.convs, *(c for b in getattr(model, 'blocks', ()) for c in (b.c1, b.c2))]:  # + residual blocks
         conv.to(memory_format=torch.channels_last)
     model.convs[0].register_forward_pre_hook(

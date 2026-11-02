@@ -91,7 +91,8 @@ def test_tile_tune_starts_as_the_base_head_trains_heads_side_by_side_and_resumes
 
 @pytest.mark.parametrize('option', [{}, dict(res_blocks=1), dict(flight_grid=1), dict(tile_blocks=2),
                                     dict(board=2, board_rows=4, board_cols=3), dict(res_blocks=1, tile_blocks=1, res_norm=0),
-                                    dict(attention_layers=2, dist_bias=1), dict(card_stats=3)])
+                                    dict(attention_layers=2, dist_bias=1), dict(card_stats=3),
+                                    dict(arch=2, width=16, layers=2, heads=2, tile_layers=1)])
 def test_architecture_options_train_and_the_default_is_unchanged(tmp_path, monkeypatch, option):
     root = dataset(tmp_path / 'data', monkeypatch)
     entries = json.loads((root / 'manifest.json').read_text())['entries']
@@ -99,7 +100,7 @@ def test_architecture_options_train_and_the_default_is_unchanged(tmp_path, monke
     torch.manual_seed(0)
     config = dict(vocab_size=len(C.Vocab([26000000])), card_dim=4, object_dim=8, conv_channels=8, conv_layers=4, core=8, attention_layers=0)
     stats = torch.rand(config['vocab_size'], option['card_stats']) if option.get('card_stats') else None
-    model = policy.Policy(policy.Config(**{**config, **option}), card_table=stats)
+    model = policy.build(policy.Config(**{**config, **option}), card_table=stats)
     if option.get('card_stats'):  # starts as the plain embedding; a checkpoint carries its table
         assert torch.equal(model.card(torch.tensor([0, 2])), model.card.weight[[0, 2]])
         fresh = policy.Policy(policy.Config(**{**config, **option}))  # as policy.load builds it
@@ -124,6 +125,12 @@ def test_architecture_options_train_and_the_default_is_unchanged(tmp_path, monke
         assert model.dist_bias.weight.grad.abs().sum() > 0, 'the distance bias learns'
     if option.get('card_stats'):
         assert model.card.stat.weight.grad.abs().sum() > 0, 'the stats reach the network'
+    if option.get('arch') == 2:
+        assert model.bias.dx.weight.grad.abs().sum() > 0 and model.tile_bias.dist.weight.grad.abs().sum() > 0, \
+            'the position biases learn'
+        model.eval()
+        x, _ = arrays(1, 0)
+        assert policy.Agent(model, 0).act({k: v[0] for k, v in x.items()})[0] in ('wait', 'card', 'ability')
 
 
 def test_unaffordable_cards_are_not_offered_and_held_taps_are_in_flight():

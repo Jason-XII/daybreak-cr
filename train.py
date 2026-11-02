@@ -23,14 +23,14 @@ import torch.distributed as dist
 
 from cr import observation as C
 from cr.imitation import Games, Objective, collate, loss_and_metrics, summarize
-from cr.policy import Config, Policy
+from cr.policy import Config, build
 
 
 # ---- training -----------------------------------------------------------------------------------------------------------
 DEFAULTS = dict(epochs=4.0, batch=32, chunk=128, workers=4, lr=3e-4, final_lr=1.0, weight_decay=0.01, warmup=500, value_coef=0.5,
                 next_play=0.5, card_dim=32, object_dim=32, attention_layers=1, conv_channels=48, conv_layers=4, core=256, board=0,
                 res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8, board_cols=4, res_norm=1, dist_bias=0,
-                card_stats=0, ability_labels=0, max_train=0, max_val=0, val_every=0, val_after='',
+                card_stats=0, arch=1, width=384, layers=10, heads=6, tile_layers=2, ability_labels=0, max_train=0, max_val=0, val_every=0, val_after='',
                 seed=0, log_every=50, checkpoint_every=1000, device='cuda')
 # final_lr: the learning rate falls linearly to lr x final_lr by the last step (1.0 = constant)
 # validation (31 Oct): after every pass, and every val_every steps (0 = only after passes; RUN/best.pt keeps the step with
@@ -41,6 +41,7 @@ DEFAULTS = dict(epochs=4.0, batch=32, chunk=128, workers=4, lr=3e-4, final_lr=1.
 # --core 384
 # large model (8.0M, 2026-10-18): --card_dim 64 --object_dim 160 --attention_layers 6 --conv_channels 160 --conv_layers 12
 # --core 448 --board 32
+# token model L (24.5M, 2 Nov): --arch 2 --card_dim 64 --core 384 (width 384, 10 layers, 6 heads, 2 tile blocks)
 
 
 def lockstep(batches, device, world):
@@ -95,8 +96,9 @@ def train(data, out, settings):
                     ('card_dim', 'object_dim', 'attention_layers', 'conv_channels', 'conv_layers', 'core')},
                     board=settings.get('board', 0), card_stats=0 if stats is None else stats.shape[1], inputs=2,
                     **{k: settings.get(k, v) for k, v in dict(res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8,
-                                                              board_cols=4, res_norm=1, dist_bias=0).items()})
-    policy = Policy(config, C.effect_matrix(vocab), stats).to(device)
+                                                              board_cols=4, res_norm=1, dist_bias=0, arch=1, width=384, layers=10,
+                                                              heads=6, tile_layers=2).items()})
+    policy = build(config, C.effect_matrix(vocab), stats).to(device)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=settings['lr'], weight_decay=settings['weight_decay'], fused=cuda)
     step = 0
     if (out / 'latest.pt').exists():
@@ -105,10 +107,12 @@ def train(data, out, settings):
         optimizer.load_state_dict(saved['optimizer'])
         step = saved['step']
     if cuda:  # measured faster on A100s (2026-10-14)
-        for conv in policy.convs:
+        for conv in getattr(policy, 'convs', ()):  # TokenPolicy has none
             conv.to(memory_format=torch.channels_last)
-        policy.convs[0].register_forward_pre_hook(lambda m, a: (a[0].contiguous(memory_format=torch.channels_last),))
-        policy.forward = torch.compile(policy.forward, dynamic=True)
+        if hasattr(policy, 'convs'):
+            policy.convs[0].register_forward_pre_hook(lambda m, a: (a[0].contiguous(memory_format=torch.channels_last),))
+        if config.arch != 2:  # ponytail: arch 2 runs eager (2 Nov: Inductor ValueRangeError [0:-1] on its dynamic shapes);
+            policy.forward = torch.compile(policy.forward, dynamic=True)  # compile it if the eager speed falls short
     objective = Objective(policy, settings['value_coef'], settings['next_play'])
     if world > 1:
         objective = nn.parallel.DistributedDataParallel(objective, device_ids=[device.index] if cuda else None,

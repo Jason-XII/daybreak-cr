@@ -11,6 +11,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from cr import observation as C
+from cr.policy import TILE_KEYS
 
 W, H, CELLS = C.W, C.H, C.CELLS
 WAIT, PLAY, ABILITY1 = C.WAIT, C.PLAY, C.ABILITY1
@@ -32,7 +33,7 @@ def loss_and_metrics(model, xs, ts, value_coef, next_coef):
     loss_which = F.cross_entropy(which[which_ok], target_which[which_ok]) if which_ok.any() else zero
     flat = {k: v.reshape(-1, *v.shape[2:]) for k, v in xs.items() if k in ('hand_card', 'legal', 'obj_side', 'obj_float')}
     if play.any():
-        tiles = model.tiles({k: out[k][play] for k in ('core', 'grid', 'tokens')},
+        tiles = model.tiles({k: out[k][play] for k in TILE_KEYS if k in out},
                             {k: v[play] for k, v in flat.items()}, target_which)
         target_tile = ts['tile'].reshape(-1)[play]
         loss_tile = F.cross_entropy(tiles, target_tile)
