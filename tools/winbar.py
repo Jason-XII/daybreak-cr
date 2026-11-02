@@ -1,11 +1,11 @@
 """A window with a blue/red bar: the live model's predicted win chance, (value + 1) / 2, from its newest log in DIR.
-    python winbar.py [DIR]    (default ~/cr-live/runs/live; run next to play.py)"""
+    python winbar.py [DIR]    (default ~/cr-live/runs/nulls; run next to play.py)"""
 import json
 import sys
 import tkinter as tk
 from pathlib import Path
 
-LOGS = Path(sys.argv[1] if len(sys.argv) > 1 else Path.home() / 'cr-live/runs/live')
+LOGS = Path(sys.argv[1] if len(sys.argv) > 1 else Path.home() / 'cr-live/runs/nulls')
 W, H = 90, 600
 root = tk.Tk()
 root.title('P(win)')

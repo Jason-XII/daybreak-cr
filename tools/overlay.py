@@ -2,7 +2,7 @@
 mover's win chance ((value + 1) / 2 from the live log) gives !! / ! / ? / ??, drawn above the tile it was played on.
 
 A transparent click-through panel over the arena, placed by the 18 x 32 grid profile of crack-cr/queue_overlay
-(calibrate with its arena_overlay.py, which saves the profile). Reads the newest log in ~/cr-live/runs/live.
+(calibrate with its arena_overlay.py, which saves the profile). Reads the newest log in ~/cr-live/runs/nulls.
 Needs PyObjC: /opt/anaconda3/bin/python overlay.py [--profile P] [--logs DIR]"""
 import argparse
 import json
@@ -81,7 +81,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     here = Path(__file__).resolve().parent
     parser.add_argument('--profile', type=Path, default=here.parent.parent / 'crack-cr/queue_overlay/arena_grid_profile.json')
-    parser.add_argument('--logs', type=Path, default=Path.home() / 'cr-live/runs/live')
+    parser.add_argument('--logs', type=Path, default=Path.home() / 'cr-live/runs/nulls')
     args = parser.parse_args()
     box = json.loads(args.profile.read_text())['frame_top_left']
     state = {'path': None, 'file': None, 'judge': Judge(), 'shown': []}
