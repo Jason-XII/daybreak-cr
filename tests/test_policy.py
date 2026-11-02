@@ -221,3 +221,22 @@ def test_a_checkpoint_from_before_obs_v2_ignores_the_new_inputs_and_new_ones_rea
         with torch.no_grad():
             a, b = model(base), model(changed)
         assert torch.allclose(a['what'], b['what']) != moved and torch.allclose(a['which'], b['which']) != moved
+
+
+def test_a_checkpoint_from_before_inputs_3_ignores_the_second_flight_and_snipe_ammo():
+    # inputs <= 2 (every checkpoint before 1 Nov): own_flight2_* and snipe_ammo must not move its outputs; 3 reads them
+    x, _ = arrays(3, 1)
+    torch.manual_seed(0)
+    for version, moved in ((2, False), (3, True)):
+        model = policy.Policy(policy.Config(vocab_size=5, card_dim=4, object_dim=8, conv_channels=8, conv_layers=2, core=8,
+                                            inputs=version)).eval()
+        base = {k: torch.as_tensor(v)[None] for k, v in x.items()}
+        changed = dict(base, own_flight2_card=torch.full_like(base['own_flight2_card'], 3),
+                       own_flight2_float=torch.full_like(base['own_flight2_float'], 0.5), obj_float=base['obj_float'].clone())
+        changed['obj_float'][..., C.OBJ_FLOAT_NAMES.index('snipe_ammo')] = 1
+        with torch.no_grad():
+            a, b = model(base), model(changed)
+        assert torch.allclose(a['what'], b['what']) != moved and torch.allclose(a['which'], b['which']) != moved
+        old = {k: v for k, v in base.items() if not k.startswith('own_flight2')}   # data converted before 1 Nov
+        with torch.no_grad():
+            assert torch.allclose(model(old)['what'], a['what'])

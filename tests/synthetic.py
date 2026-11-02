@@ -14,7 +14,7 @@ def arrays(size, marker):
     x = dict(obj_card=ids(2), obj_data=ids(2), obj_side=ids(2), obj_kind=ids(2), obj_float=zeros(2, C.OBJ_FLOATS),
              eff_id=ids(2, 1), eff_left=zeros(2, 1), hand_card=np.full((size, 4), 2, np.int64), mirror_card=ids(4),
              hand_float=zeros(4, C.HAND_FLOATS), cycle_card=ids(4), ability=zeros(2, C.ABILITY_FLOATS), ability_card=ids(2), own_flight_card=ids(),
-             own_flight_float=zeros(4), opp_flight_card=ids(2), opp_flight_float=zeros(2, 4), opp_seen_card=ids(8),
+             own_flight_float=zeros(4), own_flight2_card=ids(), own_flight2_float=zeros(4), opp_flight_card=ids(2), opp_flight_float=zeros(2, 4), opp_seen_card=ids(8),
              opp_seen_float=zeros(8, 3), opp_hero_card=ids(2), scalars=zeros(C.SCALARS),
              legal=np.ones((size, 4, C.H, C.W), bool))
     x['obj_side'][:, 0], x['obj_card'][:, 0] = 1, 2

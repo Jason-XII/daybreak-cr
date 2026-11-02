@@ -50,7 +50,7 @@ UNIT_STATE_NAMES = ('hidden', 'immune', 'invisible', 'airborne', 'stops_movement
                     'state_3', 'state_5', 'since_ability_s', 'ability_uses', 'height_z', 'jump_s', 'return_shot',
                     'special_cooldown_s', 'invisible_again_s', 'dash_hop')
 OBJ_FLOAT_NAMES = ('x', 'y', 'dx', 'dy', 'hp_frac', 'log_max_hp', 'deploy_s', 'has_target', 'target_dx', 'target_dy',
-                   'own', 'is_tower') + UNIT_STATE_NAMES + ('king_awake', 'daggers', 'ability_button', 'spare_2')
+                   'own', 'is_tower') + UNIT_STATE_NAMES + ('king_awake', 'daggers', 'ability_button', 'snipe_ammo')
 HAND_FLOAT_NAMES = ('cost', 'affordable', 'evo_ready', 'evo_progress', 'hero_form', 'evolution_form', 'spare_1')
 # per ability button (31 Oct): which hero it belongs to is the 'ability_card' id input; 'pending' = our press is in flight
 ABILITY_FLOAT_NAMES = ('available', 'ready', 'charges', 'cooldown', 'pending') + tuple(
@@ -362,8 +362,10 @@ def decision_inputs(d, owner, vocab, prev_pos, state, shared=None, gap=5, button
         if aim:
             ax, ay = rotate(aim[0], aim[1], owner)
             us[16], us[17] = _clip((ax - ox) / 1000, -20, 20) / 20, _clip((ay - oy) / 1000, -20, 20) / 20
+        # snipe_ammo (1 Nov, was a spare): the evolved Musketeer's snipe shots left / 3 (clapha-engine unit_states
+        # snipeAmmo, 10ae8ee: its slot-10 action +0x64, found by the field census)
         extra = [float(u.get('kingAwake', 0) or 0), (u.get('daggers') or 0) / 8 if u.get('daggers') is not None else 0.0,
-                 (buttons or {}).get(oid, 0) / 2, 0.0]
+                 (buttons or {}).get(oid, 0) / 2, (u.get('snipeAmmo') or 0) / 3 if u.get('snipeAmmo') is not None else 0.0]
         x['obj_float'][i] = np.array(f + us + extra, np.float32)
         buffs = sorted(u.get('buffs') or (), key=lambda b: -(b.get('remainingMs') or 0))
         state['effects_dropped'] += max(0, len(buffs) - MAX_EFFECTS)
@@ -494,6 +496,10 @@ class PlayerView:
             return [fx / 18000, fy / 32000, (tt - t) / DEPLOY_DELAY, cost(c['card_id']) / 10]
         x['own_flight_card'] = np.array(vocab(own_f[0][1]['card_id']) if own_f else 0, np.int64)
         x['own_flight_float'] = np.array(flight(*own_f[0]) if own_f else [0.0] * 4, np.float32)
+        # a second own play in flight (1 Nov; read by Config.inputs >= 3): with overlap two of our cards can be on the
+        # way and the first input showed only one, so the model did not see what it had just spent
+        x['own_flight2_card'] = np.array(vocab(own_f[1][1]['card_id']) if len(own_f) > 1 else 0, np.int64)
+        x['own_flight2_float'] = np.array(flight(*own_f[1]) if len(own_f) > 1 else [0.0] * 4, np.float32)
         x['opp_flight_card'] = np.array([vocab(c['card_id']) for _, c in opp_f] + [0] * (2 - len(opp_f)), np.int64)
         x['opp_flight_float'] = np.array([flight(tt, c) for tt, c in opp_f] + [[0.0] * 4] * (2 - len(opp_f)), np.float32)
         seen = [c for _, c in sorted((tt, c['card_id']) for tt, c in landed if c['owner'] == other and tt <= t)]

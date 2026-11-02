@@ -41,6 +41,8 @@ class Config:
     inputs: int = 1        # 2 (obs-v2, 31 Oct): ability rows of 17 floats and the card of each button, hero / evolution form
                            # in the hand, our ability carriers flagged. 1: every checkpoint before obs-v2; it is given the
                            # obs-v2 inputs with those new values blanked, as it was trained (see v1_inputs)
+                           # 3 (1 Nov): a second own card in flight (own_flight2_*) and the object float snipe_ammo (the
+                           # evolved Musketeer's shots left); checkpoints with inputs < 3 get both blanked (v2_inputs)
 
 
 class ResBlock(nn.Module):
@@ -156,6 +158,26 @@ def v1_inputs(x):
     return x
 
 
+def v2_inputs(x):
+    """Inputs as a checkpoint from before inputs 3 saw them: the object float 'snipe_ammo' was a spare (always 0) and
+    there was no second own flight, so both stay out (0)."""
+    x = dict(x)
+    objects = x['obj_float'].clone()
+    objects[..., C.OBJ_FLOAT_NAMES.index('snipe_ammo')] = 0
+    x['obj_float'] = objects
+    x.pop('own_flight2_card', None)
+    x.pop('own_flight2_float', None)
+    return x
+
+
+def own_flight2(x):
+    """(card, floats) of the second own play in flight, zeros where the inputs have none (data converted before 1 Nov)."""
+    if 'own_flight2_card' in x:
+        return x['own_flight2_card'], x['own_flight2_float']
+    card = x['own_flight_card']
+    return torch.zeros_like(card), x['own_flight_float'].new_zeros(x['own_flight_float'].shape)
+
+
 class Policy(nn.Module):
     def __init__(self, config: Config, effect_table=None, card_table=None):
         super().__init__()
@@ -189,7 +211,7 @@ class Policy(nn.Module):
         self.register_buffer('coords', torch.stack([xs, ys])[None], persistent=False)
         hand_in = 4 * (2 * d + C.HAND_FLOATS)
         ability_in = 2 * (C.ABILITY_FLOATS + d) if c.inputs >= 2 else 2 * V1_ABILITY_FLOATS
-        rest_in = (4 * d) + ability_in + (d + 4) + 2 * (d + 4) + 8 * (d + 3) + 2 * d + C.SCALARS
+        rest_in = (4 * d) + ability_in + (d + 4) * (2 if c.inputs >= 3 else 1) + 2 * (d + 4) + 8 * (d + 3) + 2 * d + C.SCALARS
         summary_in = 2 * ch + 2 * c.object_dim + hand_in + rest_in + c.board * c.board_rows * c.board_cols
         self.board = nn.Sequential(nn.Conv2d(ch, c.board, 1), nn.ReLU(),
                                    nn.AdaptiveAvgPool2d((c.board_rows, c.board_cols))) if c.board else None
@@ -241,9 +263,14 @@ class Policy(nn.Module):
         grid = o.new_zeros(N, CELLS, c.object_dim)
         grid.scatter_add_(1, cells.unsqueeze(-1).expand(-1, -1, c.object_dim), o)
         if self.flight is not None:  # plays in flight where they will land: ours (1) and the opponent's (2)
-            cards = torch.cat([x['own_flight_card'].reshape(N, 1), x['opp_flight_card'].reshape(N, 2)], 1)
-            floats = torch.cat([x['own_flight_float'].reshape(N, 1, 4), x['opp_flight_float'].reshape(N, 2, 4)], 1)
-            side = torch.tensor([1, 2, 2], device=cards.device).expand(N, 3)
+            own_c, own_f = [x['own_flight_card'].reshape(N, 1)], [x['own_flight_float'].reshape(N, 1, 4)]
+            if self.config.inputs >= 3:
+                card2, float2 = own_flight2(x)
+                own_c.append(card2.reshape(N, 1))
+                own_f.append(float2.reshape(N, 1, 4))
+            cards = torch.cat(own_c + [x['opp_flight_card'].reshape(N, 2)], 1)
+            floats = torch.cat(own_f + [x['opp_flight_float'].reshape(N, 2, 4)], 1)
+            side = torch.tensor([1] * len(own_c) + [2, 2], device=cards.device).expand(N, len(own_c) + 2)
             f = self.flight(torch.cat([self.card(cards), self.side(side), floats], -1)) * (cards > 0).unsqueeze(-1)
             spots = (floats[..., 1] * H).long().clamp(0, H - 1) * W + (floats[..., 0] * W).long().clamp(0, W - 1)
             grid.scatter_add_(1, spots.unsqueeze(-1).expand(-1, -1, c.object_dim), f.to(grid.dtype))
@@ -266,6 +293,8 @@ class Policy(nn.Module):
         scores), core [B*T, core], value [B, T], state."""
         B, T = x['scalars'].shape[:2]
         N = B * T
+        if self.config.inputs < 3:
+            x = v2_inputs(x)
         if self.config.inputs < 2:
             x = v1_inputs(x)
         flat = {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()}
@@ -275,6 +304,7 @@ class Policy(nn.Module):
             self.card(flat['cycle_card']).flatten(1), flat['ability'].flatten(1),
             *([self.card(flat['ability_card']).flatten(1)] if self.config.inputs >= 2 else []),
             torch.cat([self.card(flat['own_flight_card']), flat['own_flight_float']], -1),
+            *([torch.cat([self.card(own_flight2(flat)[0]), own_flight2(flat)[1]], -1)] if self.config.inputs >= 3 else []),
             torch.cat([self.card(flat['opp_flight_card']), flat['opp_flight_float']], -1).flatten(1),
             torch.cat([self.card(flat['opp_seen_card']), flat['opp_seen_float']], -1).flatten(1),
             self.card(flat['opp_hero_card']).flatten(1), flat['scalars']], -1)

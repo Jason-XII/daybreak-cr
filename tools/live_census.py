@@ -24,9 +24,9 @@ from cr import observation as C  # noqa: E402
 
 KINDS = {1: 'unit', 2: 'tower', 3: 'area', 4: 'projectile', 5: 'timed'}
 FLOATS = {'hand_float': C.HAND_FLOAT_NAMES, 'scalars': C.SCALAR_NAMES, 'ability': C.ABILITY_FLOAT_NAMES,
-          'own_flight_float': ('x', 'y', 'eta', 'cost'), 'opp_flight_float': ('x', 'y', 'eta', 'cost'),
+          'own_flight_float': ('x', 'y', 'eta', 'cost'), 'own_flight2_float': ('x', 'y', 'eta', 'cost'), 'opp_flight_float': ('x', 'y', 'eta', 'cost'),
           'opp_seen_float': ('back_in', 'recency', 'cost')}
-IDS = ('hand_card', 'cycle_card', 'ability_card', 'opp_hero_card', 'own_flight_card', 'opp_flight_card', 'opp_seen_card',
+IDS = ('hand_card', 'cycle_card', 'ability_card', 'opp_hero_card', 'own_flight_card', 'own_flight2_card', 'opp_flight_card', 'opp_seen_card',
        'obj_card', 'obj_data', 'eff_id')
 
 
@@ -103,6 +103,8 @@ def compare(train, live, names):
                     print('   %-20s %7.2f%% %7.2f%%  %8.3f %8.3f  %s' % (n, 100 * st[i], 100 * sl[i], mt[i], ml[i],
                                                                      flag(st[i], sl[i], mt[i], ml[i])))
     for k, cols in FLOATS.items():
+        if k not in train or k not in live:          # an input the archives predate (own_flight2_*, 1 Nov)
+            continue
         print('==', k)
         (st, mt), (sl, ml) = share_mean(train[k].reshape(-1, len(cols))), share_mean(live[k].reshape(-1, len(cols)))
         for i, n in enumerate(cols):
@@ -110,6 +112,8 @@ def compare(train, live, names):
                                                              flag(st[i], sl[i], mt[i], ml[i])))
     print('== ids: padding / unknown / known (%), training | live')
     for k in IDS:
+        if k not in train or k not in live:
+            continue
         f = lambda x: [100 * (x == 0).mean(), 100 * (x == 1).mean(), 100 * (x > 1).mean()]  # noqa: E731
         print('   %-16s %5.1f %5.1f %5.1f | %5.1f %5.1f %5.1f' % (k, *f(train[k].ravel()), *f(live[k].ravel())))
     print('== per unit type (>= 30 rows on both sides): object columns with a gap, and kinds that disagree')
