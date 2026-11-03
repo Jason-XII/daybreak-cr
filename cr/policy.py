@@ -447,9 +447,9 @@ class TokenPolicy(nn.Module):
         yes = torch.ones(N, 5, dtype=torch.bool, device=tokens.device)  # summary and hand: always (ability below too)
         present = torch.cat([yes, f['cycle_card'] > 0, yes[:, :2], flight_card > 0, f['opp_seen_card'] > 0,
                              f['opp_hero_card'] > 0, f['obj_side'] > 0], 1)
-        scale = torch.tensor([W, H], dtype=torch.float32, device=tokens.device)
         none = lambda n: tokens.new_zeros(N, n, 2, dtype=torch.float32)  # noqa: E731
-        xy = torch.cat([none(11), flight_float[..., :2].float(), none(10), f['obj_float'][..., :2].float()], 1) * scale
+        xy = torch.cat([none(11), flight_float[..., :2].float(), none(10), f['obj_float'][..., :2].float()], 1)
+        xy = torch.stack([xy[..., 0] * W, xy[..., 1] * H], -1)  # no host tensor: CUDA graph capture forbids the copy
         located = present.clone()
         located[:, :11], located[:, 14:FIXED] = False, False
         mask = self.bias(xy, xy, located, located, present)
