@@ -16,7 +16,6 @@ import itertools
 import json
 import os
 from pathlib import Path, PurePosixPath
-import shutil
 import struct
 import subprocess
 import tempfile
@@ -30,9 +29,9 @@ from cr.policy import Agent, load
 from cr.diagnostics import Capture, provenance
 from cr.live_budget import LiveBudget, Pending
 
-SDK = Path(os.environ.get('ANDROID_SDK_ROOT', Path.home() / 'Library/Android/sdk'))
-ADB = shutil.which('adb') or str(SDK / 'platform-tools/adb')
-CLIENTS = Path(os.environ.get('CR_CLIENTS', Path.home() / 'cr-clients'))
+SDK = Path.home() / 'Library/Android/sdk'
+ADB = str(SDK / 'platform-tools/adb')
+CLIENTS = Path.home() / 'cr-clients'
 FRIDA_SERVER = '/data/local/tmp/frida-server'
 FRAME_MS = 50
 FIRST_DECISION = 90  # as in imitation learning; taps earlier are not taken anyway
@@ -49,20 +48,21 @@ PAIRED_OK = (706, 2035)  # OK on a results screen that also offers Play Again (l
 ABILITY_BUTTON = (973, 1954)  # hero / champion ability, bottom right above the hand
 
 
-# ---- the client and its emulator ---------------------------------------------------------------------------------------
 class Client(SimpleNamespace):
-    """One game client's private parts (1 Nov 2026): CLIENTS/<name>/client.json and the reader it names, kept outside every
-    repository (the readers are private: never commit them). client.json: package, activity; avd, serial, emulator (its
-    extra arguments), tcp (adb connect to the serial), no_proxy (start the emulator without proxy variables); reader (a
-    file in the folder: .c is built with the NDK, anything else pushed as it is), device_reader, manager_rva, root_context;
-    seat ('roster': the battle roster and our account, asked through Frida at local_account's libg addresses; 'hand':
-    the one hand the client reads); tables / tables_build (unit-state tables); hero_card_class (the card class of hero
-    units when not 203, e.g. 306); check (libg_sha256 + live_review_patch, or version_code); model,
-    temperature, overlap (the defaults of a live game)."""
+    """
+    The live play script can connect to multiple types of clients in ~/cr-clients. This folder doesn't contain any code,
+    but in ~/cr-clients/<client name> exists a file called `client.json`, which reveals detailed information on how
+    to connect to a specific Clash Royale Client.
+    Because of privacy considerations, I won't publish the cr-clients folder to github and such.
 
+    This class inherits from SimpleNamespace, and can be used as follows:
+    >>> client = Client.load('nulls')
+    >>> client.hero_card_class
+    <The value of hero_card_class in that client.json file>
+    """
     @classmethod
     def load(cls, name):
-        folder = Path(name).expanduser() if '/' in str(name) else CLIENTS / name
+        folder = CLIENTS / name
         return cls(folder=folder, **json.loads((folder / 'client.json').read_text()))
 
     def card(self, card):
@@ -116,15 +116,13 @@ def disable_reviews(client, library):
 
 
 def reader_binary(client):
-    """The client's reader for the device: its binary, or its C source built with the NDK."""
+    """Find the reader and compile it."""
     source = client.folder / client.reader
-    if source.suffix != '.c':
-        return source
-    cc = sorted(SDK.glob('ndk/*/toolchains/llvm/prebuilt/*/bin/aarch64-linux-android31-clang'))
-    if not cc:
-        raise RuntimeError(f'building {source} needs the Android NDK under {SDK}/ndk')
+    if source.suffix != '.c': return source
+    # if this is run on another machine, just change the corresponding path
+    clang = SDK / 'ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android31-clang'
     out = Path(tempfile.gettempdir()) / f'cr-reader-{client.name}'
-    subprocess.run([str(cc[-1]), '-O2', '-o', str(out), str(source)], check=True)
+    subprocess.run([str(clang), '-O2', '-o', str(out), str(source)], check=True)
     return out
 
 
