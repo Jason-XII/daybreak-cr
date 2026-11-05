@@ -41,6 +41,8 @@ def test_replay_preparation_and_calibration_match_frozen_reference():
         assert game['match'] == fixture['match']
         assert convert._jsonable(game['commands']) == fixture['commands']
         assert convert._jsonable(game['terminal']) == fixture['terminal']
+        started_game, started = convert.calibrate(convert.prepare(fixture['payload']), DealProbe(), return_started=True)
+        assert started is True and started_game == game
 
 
 def test_replay_rejects_ambiguous_sides_unknown_cards_and_impossible_deals():
@@ -101,6 +103,81 @@ def test_recorder_shares_frame_objects_with_decisions():
 
 def test_converter_does_not_import_torch():
     subprocess.run([sys.executable, '-c', "import sys, convert; assert 'torch' not in sys.modules"], check=True, cwd=ROOT)
+
+
+def test_recorder_probe_skips_state_reads():
+    class Reader:
+        def frame(self, battle):
+            pytest.fail('probe must not read frames')
+
+        def unit_states(self, battle):
+            pytest.fail('probe must not read units')
+
+    env = SimpleNamespace(reader=Reader(), battle=object(), stalled=False, now=0)
+    env.tick = lambda: env.now
+    env._advance = lambda: setattr(env, 'now', env.now + 1)
+    env._result = lambda: (None, False, None)
+    recorder = convert.Recorder(env, record=False)
+    assert recorder.run_lean(10) == ([], 10, False)
+    assert recorder.decision_count == 2 and recorder.decisions == []
+
+
+def test_recorder_raw_capture_omits_addresses_and_keeps_terminal_frame():
+    class Reader:
+        capture_raw = True
+
+        def frame(self, battle):
+            return dict(tick=env.now, objects=[dict(nativeObjectId=7, addr=1234)])
+
+        def unit_states(self, battle):
+            return [dict(nativeObjectId=7)]
+
+        def raw_fields(self, battle):
+            return dict(objects=[dict(nativeObjectId=7, state=999)])
+
+    env = SimpleNamespace(reader=Reader(), battle=object(), stalled=False, now=0)
+    env.tick = lambda: env.now
+    env._advance = lambda: setattr(env, 'now', env.now + 1)
+    env._result = lambda: (None, env.now == 7, None)
+    recorder = convert.Recorder(env)
+    _, tick, ended = recorder.run_lean(10)
+    assert (tick, ended, recorder.decision_count) == (7, True, 2)
+    assert [d['tick'] for d in recorder.decisions] == [5, 7]
+    assert recorder.decisions[-1]['engineEnded'] is True
+    assert recorder.decisions[0]['objects'] == [dict(nativeObjectId=7)]
+    assert recorder.decisions[0]['rawNative']['objects'][0]['state'] == 999
+
+
+def test_rejected_search_preserves_first_trajectory(monkeypatch):
+    def replay(native, payload, record=True, **options):
+        native.decisions = [dict(tick=5), dict(tick=10)] if record else []
+        native.decision_count = 2 if record else 4
+        return dict(game={'king_alternatives': [0]}, presses=[], holds=[],
+                    fidelity={'tower_hp_error': 1, 'winner_match': False, 'crowns_match': False})
+
+    monkeypatch.setattr(convert, 'play_replay', replay)
+    recorder = convert.Recorder(None)
+    result = convert.play_exact(recorder, {})
+    assert result['search']['runs'] == 2
+    assert recorder.decisions == [dict(tick=5), dict(tick=10)]
+    assert recorder.decision_count == 2
+
+
+def test_prepared_recipe_bypasses_calibration_and_is_not_mutated(monkeypatch):
+    fixture = FIXTURES[0]
+    game = convert.calibrate(convert.prepare(fixture['payload']), DealProbe())
+    game['commands'] = []
+    saved = copy.deepcopy(game)
+    monkeypatch.setattr(convert, 'prepare', lambda *a: pytest.fail('recipe must bypass preparation'))
+    monkeypatch.setattr(convert, 'calibrate_deal', lambda *a, **kw: pytest.fail('recipe must bypass calibration'))
+    calls = []
+    native = SimpleNamespace(decisions=[], hold_log=[],
+                             create_match=lambda match: calls.append(copy.deepcopy(match)),
+                             run_lean=lambda to, every, **kw: ([], to, False),
+                             observe=lambda: dict(objects=[], crownsRaw=[0, 0], winner=None))
+    result = convert.play_replay(native, fixture['payload'], prepared_game=game, calibration_seeds=0)
+    assert game == saved and result['game'] == saved
+    assert calls == [saved['match']]
 
 
 def test_archive_round_trip(tmp_path, monkeypatch):
