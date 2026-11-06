@@ -31,6 +31,8 @@ DEFAULTS = dict(epochs=4.0, batch=32, chunk=128, workers=4, lr=3e-4, final_lr=1.
                 next_play=0.5, card_dim=32, object_dim=32, attention_layers=1, conv_channels=48, conv_layers=4, core=256, board=0,
                 res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8, board_cols=4, res_norm=1, dist_bias=0,
                 card_stats=0, arch=1, width=384, layers=10, heads=6, tile_layers=2, ability_labels=0, max_train=0, max_val=0, val_every=0, val_after='',
+                inputs=2, manifest='manifest.json', max_steps=0, max_seconds=0, validation_batch=0, micro_batch=0,
+                swanlab_mode='disabled', swanlab_project='DayBCR', swanlab_workspace='Terrasse', swanlab_name='',
                 seed=0, log_every=50, checkpoint_every=1000, device='cuda')
 # final_lr: the learning rate falls linearly to lr x final_lr by the last step (1.0 = constant)
 # validation (31 Oct): after every pass, and every val_every steps (0 = only after passes; RUN/best.pt keeps the step with
@@ -70,7 +72,8 @@ def train(data, out, settings):
         torch.backends.cuda.matmul.allow_tf32 = True
     if world > 1:
         dist.init_process_group('nccl' if cuda else 'gloo', timeout=timedelta(minutes=15))
-    manifest = json.loads((Path(data) / 'manifest.json').read_text())
+    manifest_path = Path(data) / settings.get('manifest', 'manifest.json')
+    manifest = json.loads(manifest_path.read_text())
     vocab = C.Vocab(manifest['schema']['vocab'])
     if settings.get('ability_labels') and manifest['schema'].get('presses_at_tap'):
         raise SystemExit('--ability_labels 1 shifts presses to the tap; this dataset has them there already (convert.py since PR #14)')
@@ -86,26 +89,37 @@ def train(data, out, settings):
         train_entries = random.Random(settings['seed']).sample(train_entries, min(settings['max_train'], len(train_entries)))
     if settings.get('max_val'):
         val_sets = {k: random.Random(settings['seed'] + 1).sample(v, min(settings['max_val'], len(v))) for k, v in val_sets.items()}
-    batch = max(1, settings['batch'] // world)
+    if settings['batch'] < world or settings['batch'] % world:
+        raise ValueError('global batch must be positive and divisible by world size')
+    batch = settings['batch'] // world
+    micro_batch = settings.get('micro_batch') or batch
+    if micro_batch <= 0 or micro_batch > batch or batch % micro_batch:
+        raise ValueError('per-rank microbatch must divide the per-rank batch')
+    accumulation = batch // micro_batch
     # ponytail: an epoch is an estimate (random chunk offsets vary the count a little); exact epoch ends are not kept
     total = int(settings['epochs'] * sum(math.ceil(e['decisions'] / settings['chunk']) for e in train_entries) // settings['batch'])
+    if settings.get('max_steps'):
+        total = min(total, settings['max_steps'])
 
     torch.manual_seed(settings['seed'])
     stats = C.card_matrix(vocab) if settings.get('card_stats') else None  # --card_stats 1: the table's fields
     config = Config(vocab_size=len(vocab), next_play=settings['next_play'] > 0, **{k: settings[k] for k in
                     ('card_dim', 'object_dim', 'attention_layers', 'conv_channels', 'conv_layers', 'core')},
-                    board=settings.get('board', 0), card_stats=0 if stats is None else stats.shape[1], inputs=2,
+                    board=settings.get('board', 0), card_stats=0 if stats is None else stats.shape[1], inputs=settings.get('inputs', 2),
                     **{k: settings.get(k, v) for k, v in dict(res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8,
                                                               board_cols=4, res_norm=1, dist_bias=0, arch=1, width=384, layers=10,
                                                               heads=6, tile_layers=2).items()})
     policy = build(config, C.effect_matrix(vocab), stats).to(device)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=settings['lr'], weight_decay=settings['weight_decay'], fused=cuda)
-    step = 0
+    step, decisions_seen = 0, 0
     if (out / 'latest.pt').exists():
-        saved = torch.load(out / 'latest.pt', map_location='cpu', weights_only=False)
+        saved = torch.load(out / 'latest.pt', map_location='cpu', weights_only=True)
+        if asdict(Config(**saved['config'])) != asdict(config) or saved['vocab'] != list(vocab.index):
+            raise ValueError('Checkpoint architecture or vocabulary mismatch')
         policy.load_state_dict(saved['model'])
         optimizer.load_state_dict(saved['optimizer'])
         step = saved['step']
+        decisions_seen = saved.get('decisions_seen', 0)
     if cuda:  # measured faster on A100s (2026-10-14)
         for conv in getattr(policy, 'convs', ()):  # TokenPolicy has none
             conv.to(memory_format=torch.channels_last)
@@ -119,23 +133,42 @@ def train(data, out, settings):
                                                         find_unused_parameters=True)
     autocast = (lambda: torch.autocast('cuda', torch.bfloat16)) if cuda else nullcontext
     log = (out / 'metrics.jsonl').open('a') if rank == 0 else None
+    tracker = None
+    if rank == 0 and settings.get('swanlab_mode', 'disabled') != 'disabled':
+        import swanlab
+        tracker = swanlab
+        run = tracker.init(project=settings.get('swanlab_project', 'DayBCR'),
+                           workspace=settings.get('swanlab_workspace', 'Terrasse'),
+                           experiment_name=settings.get('swanlab_name') or out.name,
+                           mode=settings['swanlab_mode'], logdir=str(out / 'swanlab'),
+                           config={**settings, 'model': asdict(config), 'world_size': world,
+                                   'parameters': sum(p.numel() for p in policy.parameters()),
+                                   'manifest': str(manifest_path.resolve()), 'train_views': len(train_entries),
+                                   'val_views': {k: len(v) for k, v in val_sets.items()}})
+        (out / 'swanlab.json').write_text(json.dumps({'id': run.id, 'url': run.url}))
+        print(f'SWANLAB_READY {run.url}', flush=True)
 
     def write(row):
         log.write(json.dumps(row) + '\n')
         log.flush()
         print(json.dumps(row), flush=True)
+        if tracker is not None:
+            prefix = row['split']
+            tracker.log({f'{prefix}/{k}': v for k, v in row.items()
+                         if k not in ('split', 'step') and isinstance(v, (int, float))}, step=row['step'])
 
     def checkpoint():
         if rank == 0:
             tmp = out / 'latest.tmp'
             torch.save(dict(config=asdict(config), model=policy.state_dict(), optimizer=optimizer.state_dict(),
-                            step=step, settings=settings, vocab=list(vocab.index)), tmp)
+                            step=step, decisions_seen=decisions_seen, settings=settings, vocab=list(vocab.index)), tmp)
             tmp.replace(out / 'latest.pt')
 
     def loader(entries, seed, validation=False, rank=0, world=1):
         return torch.utils.data.DataLoader(Games(data, entries, settings['chunk'], seed, validation, rank, world,
                                                  bool(settings.get('ability_labels'))),
-                                           batch_size=batch, num_workers=settings['workers'], collate_fn=collate,
+                                           batch_size=(settings.get('validation_batch') or micro_batch) if validation else micro_batch,
+                                           num_workers=settings['workers'], collate_fn=collate,
                                            pin_memory=cuda)
 
     best, validated = out / 'best.json', [None]
@@ -154,7 +187,7 @@ def train(data, out, settings):
                                              settings['value_coef'], settings['next_play'])[1]
                             for b in loader(entries, 0, validation=True)]
                 result = summarize(rows)
-                write(dict(step=step, split=split, views=len(entries), **result))
+                write(dict(step=step, split=split, views=len(entries), decisions_seen=decisions_seen, **result))
                 if split == 'val' and (not best.exists() or result['loss'] < json.loads(best.read_text())['loss']):
                     torch.save(dict(config=asdict(config), model=policy.state_dict(), step=step, settings=settings,
                                     vocab=list(vocab.index)), out / 'best.tmp')
@@ -165,38 +198,87 @@ def train(data, out, settings):
             dist.barrier()
 
     started, window = time.monotonic(), []
+    window_started, window_steps = started, 0
+    timed_out = False
+    if rank == 0:
+        (out / 'running.json').write_text(json.dumps({'pid': os.getpid(), 'step': step, 'total_steps': total,
+                                                     'parameters': sum(p.numel() for p in policy.parameters()),
+                                                     'world_size': world}))
+        print(f'TRAIN_READY step={step} total={total} world={world}', flush=True)
     while step < total:
         # a pass over the data; a resumed run starts a fresh order (seeded by the step it resumes at)
         begun = step
+        micro_step, local_observed = 0, 0
+        optimizer.zero_grad(set_to_none=True)
         for xs, ts in lockstep(loader(train_entries, settings['seed'] * 1_000_003 + step, rank=rank, world=world),
                                device, world):
             xs, ts = ({k: v.to(device, non_blocking=True) for k, v in g.items()} for g in (xs, ts))
             for group in optimizer.param_groups:
                 group['lr'] = settings['lr'] * min(1.0, (step + 1) / max(1, settings['warmup'])) * \
                     (1 - (1 - settings.get('final_lr', 1.0)) * step / total)
-            optimizer.zero_grad(set_to_none=True)
-            with autocast():
-                loss, metrics = objective(xs, ts)
-            if not math.isfinite(metrics['loss']):
-                raise FloatingPointError(f'nonfinite loss at step {step}; latest.pt is unchanged')
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
-            optimizer.step()
-            step += 1
+            sync_context = objective.no_sync() if world > 1 and micro_step + 1 < accumulation else nullcontext()
+            with sync_context:
+                with autocast():
+                    loss, metrics = objective(xs, ts)
+                if not math.isfinite(metrics['loss']):
+                    raise FloatingPointError(f'nonfinite loss at step {step}; latest.pt is unchanged')
+                (loss / accumulation).backward()
+            micro_step += 1
+            local_observed += int(ts['time'].sum())
             window.append(metrics)
+            if micro_step < accumulation:
+                continue
+            grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            step += 1
+            observed = torch.tensor(local_observed, device=device, dtype=torch.int64)
+            if world > 1:
+                dist.all_reduce(observed)
+            decisions_seen += int(observed)
+            metrics['observed_decisions'] = int(observed)
+            micro_step, local_observed = 0, 0
+            window_steps += 1
             if rank == 0 and step % settings['log_every'] == 0:
-                write(dict(step=step, split='train', seconds=round(time.monotonic() - started), **summarize(window)))
+                now = time.monotonic()
+                elapsed = max(now - window_started, 1e-6)
+                extra = dict(lr=optimizer.param_groups[0]['lr'], grad_norm=float(grad_norm),
+                             decisions_seen=decisions_seen, steps_per_second=window_steps / elapsed,
+                             decisions_per_second=sum(m.get('observed_decisions', 0) for m in window) / elapsed)
+                if cuda:
+                    extra.update(memory_allocated_gb=torch.cuda.memory_allocated(device) / 1e9,
+                                 memory_reserved_gb=torch.cuda.memory_reserved(device) / 1e9,
+                                 max_memory_allocated_gb=torch.cuda.max_memory_allocated(device) / 1e9)
+                write(dict(step=step, split='train', seconds=round(now - started), **summarize(window), **extra))
                 window = []
+                window_started, window_steps = now, 0
             if step % settings['checkpoint_every'] == 0:
                 checkpoint()
             if settings.get('val_every') and step % settings['val_every'] == 0 and step < total:
                 validate()
-            if step >= total:
+                window_started, window_steps = time.monotonic(), 0
+                window = []
+            if settings.get('max_seconds'):
+                stop = torch.tensor(time.monotonic() - started >= settings['max_seconds'], device=device)
+                if world > 1:
+                    dist.all_reduce(stop, op=dist.ReduceOp.MAX)
+                timed_out = bool(stop)
+            if step >= total or timed_out:
                 break
         if step == begun:  # else this loop would never end
             raise RuntimeError('a pass made no step: some rank has no training data')
         checkpoint()
         validate()
+        if timed_out:
+            break
+    if rank == 0:
+        (out / 'finished.json').write_text(json.dumps({'step': step, 'total_steps': total, 'timed_out': timed_out,
+                                                      'decisions_seen': decisions_seen,
+                                                      'seconds': time.monotonic() - started}))
+        print(f'TRAIN_FINISHED step={step} timed_out={timed_out}', flush=True)
+        if tracker is not None:
+            tracker.finish()
+        log.close()
     if world > 1:
         dist.destroy_process_group()
 

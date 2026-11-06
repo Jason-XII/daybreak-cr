@@ -10,3 +10,8 @@ _native_features*.so
 # Local research artifacts: analysis results.
 # They hold machine paths and account-side data; keep them out of the public repo.
 analysis/
+
+.venv/
+.pytest_cache/
+.ruff_cache/
+tmp/

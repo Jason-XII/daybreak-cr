@@ -327,7 +327,7 @@ def prepare(payload, kings=None):
                 deck0_form_availability=tuple(forms[0]), deck1_form_availability=tuple(forms[1])))
 
 
-def calibrate(game, native):
+def calibrate(game, native, return_started=False):
     """Verify actual native 4+4 dealing; remap only when the observed trace requires it."""
     match = game['match']
     seen, tested = set(), [set(), set()]
@@ -359,7 +359,7 @@ def calibrate(game, native):
                     if command['owner'] == owner and command['kind'] == 'card':
                         command['hand_slot'] = next(stream)
                 game['opening'][owner], game['queue'][owner] = observed[owner][2:]
-            return game
+            return (game, True) if return_started else game
         for owner in (0, 1):
             if slots[owner] is not None:
                 continue
@@ -402,22 +402,25 @@ def calibrate(game, native):
     raise ValueError('native deal calibration failed after ten configurations')
 
 
-def calibrate_deal(game, native, seeds=64):
+def calibrate_deal(game, native, seeds=64, return_started=False):
     """calibrate(), and for a deck with a card the game keeps out of the starting hand (Elixir Collector, Mirror) that it
     refuses, again under other seeds: such a card waits in the draw queue at a place set by the battle's seed ALONE,
     whatever its deck slot (engine probe 2026-10-24: seed 1 -> 3rd of 4 from any of the 8 slots, seed 7919 -> 4th), so
     moving it between slots under one seed never fits the plays that need it elsewhere. The first seed that fits is the
     battle's seed from then on (the real one is not published). A game whose seed is fixed (the dice search) is not varied."""
     try:
-        return calibrate(copy.deepcopy(game), native)
+        return calibrate(copy.deepcopy(game), native, return_started=return_started)
     except ValueError as refused:
         if not any(game['omitted']) or game.get('fixed_seed'):
             raise
         for k in range(1, seeds + 1):
+            attempts = getattr(native, 'search_attempts', None)
+            if attempts is not None:
+                attempts['calibration_seed'] += 1
             trial = copy.deepcopy(game)
             trial['match']['rndSeed'] = (int(game['match']['rndSeed']) + 104729 * k) % 2 ** 31
             try:
-                return calibrate(trial, native)
+                return calibrate(trial, native, return_started=return_started)
             except ValueError:
                 continue
         raise refused
@@ -490,51 +493,70 @@ def fidelity(final, terminal, payload, team_owner):
 class Recorder:
     """The native env, recording each decision's raw record (every 5 ticks) while the replay's commands drive it."""
 
-    def __init__(self, env):
+    def __init__(self, env, record=True):
         self._env = env
+        self.record = record
         self.decisions = []
+        self.decision_count = 0
+        self.search_attempts = {'seed': 0, 'calibration_seed': 0}
 
     def __getattr__(self, name):
         return getattr(self._env, name)
 
-    def run_lean(self, until, every=5):
+    def run_lean(self, until, every=5, record=None):
         env, r = self._env, self._env.reader
+        record = self.record if record is None else record
         frames = []
         while env.tick() < until and not env.stalled:
             env._advance()
             tick = env.tick()
             _crowns, ended, _winner = env._result()
-            if tick % every == 0 or ended:
+            if record and (tick % every == 0 or ended):
                 lean = r.frame(env.battle)
+                if getattr(r, 'capture_raw', False):
+                    lean['objects'] = [{k: v for k, v in obj.items() if k != 'addr'} for obj in lean['objects']]
                 frames.append(lean)
                 # frame() already read the objects; share that snapshot instead of walking native memory twice.
-                self.decisions.append({'tick': tick, 'lean': {k: v for k, v in lean.items() if k != 'objects'},
-                                       'objects': lean['objects'], 'units': r.unit_states(env.battle)})
+                decision = {'tick': tick, 'lean': {k: v for k, v in lean.items() if k != 'objects'},
+                            'objects': lean['objects'], 'units': r.unit_states(env.battle)}
+                if getattr(r, 'capture_raw', False):
+                    decision['rawNative'] = r.raw_fields(env.battle)
+                    decision['engineEnded'] = ended
+                self.decisions.append(decision)
+            if tick % every == 0 or ended:
+                self.decision_count += 1
             if ended:
                 return frames, tick, True
         if env.stalled:
-            frames.append(r.frame(env.battle))
+            if record:
+                frames.append(r.frame(env.battle))
             return frames, env.tick(), True
         return frames, env.tick(), False
 
 
-def play_replay(native, payload, kings=None, press_choices=None, seed=None):
+def play_replay(native, payload, kings=None, press_choices=None, seed=None, record=True,
+                calibration_seeds=64, prepared_game=None):
     """Play a replay's commands in the native engine (a Recorder) -> its game, held-play log and fidelity.
     Each command has two stages: at its issue tick what the client decided then (a card's selection, the units whose
     ability was ready), one tick before its landing (issue + 21) the command itself."""
-    game = prepare(payload, kings)
+    game = copy.deepcopy(prepared_game) if prepared_game is not None else prepare(payload, kings)
     if seed is not None:
         game['match']['rndSeed'], game['fixed_seed'] = int(seed), True
-    game = calibrate_deal(game, native)
-    native.create_match(game['match'])
+    if prepared_game is None:
+        game, native_started = calibrate_deal(game, native, seeds=calibration_seeds, return_started=True)
+    else:
+        native_started = False
+    if not native_started:
+        native.create_match(game['match'])
     if hasattr(native, 'decisions'):
         native.decisions = []
+        native.decision_count = 0
     tick, ended_at, failures, presses = 0, None, [], []
 
     def advance(to):
         nonlocal tick, ended_at
         if to > tick and ended_at is None:
-            _, tick, ended = native.run_lean(to, 5)
+            _, tick, ended = native.run_lean(to, 5, record=record)
             if ended and tick < to:
                 ended_at = tick
 
@@ -583,44 +605,64 @@ def exact(result):
     return f['tower_hp_error'] == 0 and f['winner_match'] and f['crowns_match']
 
 
-def play_exact(native, payload, seeds=0, max_presses=4):
+def play_exact(native, payload, seeds=0, max_presses=4, *, calibration_seeds=64):
     """play_replay, with the searches for what RoyaleAPI does not publish, each kept only when every tower ends exactly as
     recorded: the King's level where the tower troop's and the cards' differ (rule 5), the unit of each press where two
     different cards were ready (rule 2), and the battle's seed (dice: Skeleton King, Hunter, Elixir Golem; it stops when
     5 seeds give the same result). result['search'] says what was used."""
-    first = play_replay(native, payload)
+    first = play_replay(native, payload, record=True, calibration_seeds=calibration_seeds)
     first['search'] = {'runs': 1}
     if exact(first):
         return first
+    first_decisions = native.decisions
+
+    # Search probes only need fidelity and press ambiguity; trace the winning candidate once.
+    def traced(**options):
+        result = play_replay(native, payload, record=True, calibration_seeds=calibration_seeds, **options)
+        if not exact(result):
+            raise RuntimeError('exact probe did not reproduce during trace replay')
+        return result
+
     owners = first['game']['king_alternatives']
     kings = [None] + [dict.fromkeys(c, 'cards') for n in range(1, len(owners) + 1) for c in itertools.combinations(owners, n)]
     runs = 1
     for king in kings:
-        result = first if king is None else play_replay(native, payload, kings=king)
+        result = first if king is None else play_replay(native, payload, kings=king, record=False,
+                                                       calibration_seeds=calibration_seeds)
         runs += king is not None
         if exact(result):
+            if king is not None:
+                result = traced(kings=king)
             result['search'] = {'runs': runs, 'king': king}
             return result
         ambiguous = [p for p in result['presses'] if len(p['cards']) > 1][:max_presses]
         for combo in itertools.product(*[range(len(p['cards'])) for p in ambiguous]) if ambiguous else ():
-            trial = play_replay(native, payload, kings=king, press_choices=list(combo))
+            trial = play_replay(native, payload, kings=king, press_choices=list(combo), record=False,
+                                calibration_seeds=calibration_seeds)
             runs += 1
             if exact(trial):
+                trial = traced(kings=king, press_choices=list(combo))
                 trial['search'] = {'runs': runs, 'king': king, 'presses': list(combo)}
                 return trial
     errors = {first['fidelity']['tower_hp_error']}
     for k in range(1, seeds + 1):
+        attempts = getattr(native, 'search_attempts', None)
+        if attempts is not None:
+            attempts['seed'] += 1
         try:
-            trial = play_replay(native, payload, seed=7919 * k)
+            trial = play_replay(native, payload, seed=7919 * k, record=False, calibration_seeds=calibration_seeds)
         except ValueError:                     # a seed under which the deal cannot fit the plays
             continue
         runs += 1
         errors.add(trial['fidelity']['tower_hp_error'])
         if exact(trial):
+            trial = traced(seed=7919 * k)
             trial['search'] = {'runs': runs, 'seed': 7919 * k}
             return trial
         if k >= 4 and len(errors) == 1:        # the same result under 5 seeds: not seed-dependent
             break
+    native.decisions = first_decisions
+    native.decision_count = len(first_decisions)
     first['search'] = {'runs': runs, 'seed_dependent': len(errors) > 1}
     return first
 

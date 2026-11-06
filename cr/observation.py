@@ -63,6 +63,20 @@ OBJECT_KEYS = ('obj_card', 'obj_data', 'obj_side', 'obj_kind', 'obj_float', 'eff
 TOWER_IDS = range(5000000, 5000006)
 COSTS = {int(k): v for k, v in json.loads((ASSETS / 'card_costs.json').read_text()).items()}
 COST_MISSES = collections.Counter()  # cards card_costs.json lacks (read as 3): convert.py reports them per game
+PENDING_OVERFLOW = collections.Counter()
+
+
+def pack_pending_flights(flights, encode_card, encode_float, side):
+    ordered = sorted(flights, key=lambda item: item[0])
+    if len(ordered) > 2:
+        PENDING_OVERFLOW[side] += 1
+        raise ValueError(f'{side} pending flight capacity exceeded: {len(ordered)} > 2')
+    cards = np.zeros(2, np.int64)
+    floats = np.zeros((2, 4), np.float32)
+    for index, (tick, command) in enumerate(ordered):
+        cards[index] = encode_card(command['card_id'])
+        floats[index] = encode_float(tick, command)
+    return cards, floats
 
 
 def cost(card):

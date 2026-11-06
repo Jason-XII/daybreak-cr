@@ -347,7 +347,7 @@ def test_ranks_step_together_so_adam_stays_in_sync(tmp_path):
              for r in (0, 1)]
     results = [p.communicate(timeout=120) for p in procs]
     assert all(p.returncode == 0 for p in procs), results
-    assert all(out.strip() == 'same 3' for out, _ in results), results
+    assert all(out.strip().splitlines()[-1] == 'same 3' for out, _ in results), results
 
 
 def test_an_exploiter_plays_only_the_main_runs_champion(tmp_path):
