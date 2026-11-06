@@ -70,3 +70,19 @@ the experimental signed-log representation; no new identity embedding or
 quality claim is implied. The frozen old labels and vocabulary are preserved.
 `numbered_checkpoints=1` retains periodic and final optimizer checkpoints by
 hardlink before the next atomic latest-file replacement.
+
+## Experimental SplitQuery
+
+`cr/splitquery.py` separates position residuals from the card/core condition:
+the condition enters only the normalized query branch with a sigmoid-bounded
+learnable alpha. `split_query` and `split_alpha` are checkpoint fields; default
+models retain their original tile blocks. `train_history.py --split_query 1`
+selects a fresh candidate. This is experimental, not a demonstrated fix for
+the attention saturation or efficient-SDPA backward residuals.
+
+`tools/migrate_splitquery.py` copies compatible baseline weights, initializes
+the condition branch from its original query and drops the baseline optimizer.
+It writes a model-only checkpoint; this is not exact optimizer continuation.
+Do not place it in `latest.pt` and call it a resume: use it for evaluation or
+an explicitly model-only warm start in an isolated comparison.
+Source: `tmp/history-splitquery-astra/splitquery.py`.

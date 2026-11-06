@@ -39,7 +39,7 @@ DEFAULTS = dict(epochs=4.0, batch=64, chunk=1280, workers=4, lr=3e-4, final_lr=1
                 temporal_layers=4, history_length=1280,
                 compression_version='pair-unit1-aim1.5-cannon4-cap60-v1',
                 own_flight_slots=1, v2_global_dim=0, v2_entity_dim=0, v2_layout_sha256='',
-                numbered_checkpoints=1)
+                numbered_checkpoints=1, split_query=0, split_alpha=0.5)
 # final_lr: the learning rate falls linearly to lr x final_lr by the last step (1.0 = constant)
 # validation (31 Oct): after every pass, and every val_every steps (0 = only after passes; RUN/best.pt keeps the step with
 # the lowest 'val' loss); val_after 'YYYY-MM-DD': battles from that day on are left out of training and reported as
@@ -128,6 +128,8 @@ def train(data, out, settings):
                                                               heads=6, tile_layers=2).items()},
                     **{k: settings[k] for k in ('temporal_layers', 'history_length', 'compression_version',
                                                'own_flight_slots', 'v2_global_dim', 'v2_entity_dim', 'v2_layout_sha256')})
+    config.split_query = bool(settings['split_query'])
+    config.split_alpha = settings['split_alpha']
     policy = build(config, C.effect_matrix(vocab), stats).to(device)
     if settings['compile_blocks'] and cuda:
         for block in [*policy.encoder, *policy.tile_blocks, *policy.lstm.blocks]:

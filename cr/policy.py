@@ -54,6 +54,8 @@ class Config:
     v2_global_dim: int = 0
     v2_entity_dim: int = 0
     v2_layout_sha256: str = ''
+    split_query: bool = False
+    split_alpha: float = 0.5
 
 
 class ResBlock(nn.Module):
@@ -534,10 +536,15 @@ def build(config, effect_table=None, card_table=None):
     if config.v2_global_dim and (config.arch != 2 or config.inputs != 2 or config.own_flight_slots != 2
                                 or not config.v2_layout_sha256 or not config.compression_version):
         raise ValueError('V2 projections require inputs2, own2, a layout binding and entity counts')
+    if config.split_query and (config.arch != 2 or config.tile_layers <= 0):
+        raise ValueError('SplitQuery requires TokenPolicy tile attention blocks')
     model = (TokenPolicy if config.arch == 2 else Policy)(config, effect_table, card_table)
     if config.temporal_layers:
         from cr.history import TemporalCore
         model.lstm = TemporalCore(config.width, config.heads, config.temporal_layers, config.history_length)
+    if config.split_query:
+        from cr.splitquery import install
+        install(model, config.split_alpha)
     return model
 
 
@@ -551,7 +558,7 @@ ABILITY_EXPLORE = 0.0  # 28 Oct: off (was 0.01); PPO learned to leave presses to
 def load(checkpoint, device='cpu'):
     """-> (model in eval mode, its vocabulary, the saved dict). Checkpoints hold plain dicts (config, weights, vocabulary),
     so they load whatever module the code lives in."""
-    saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    saved = torch.load(checkpoint, map_location='cpu', weights_only=True)
     model = build(Config(**saved['config']))
     model.load_state_dict(saved['model'])
     return model.to(device).eval(), C.Vocab(saved['vocab']), saved
