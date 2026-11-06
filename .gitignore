@@ -14,5 +14,4 @@ analysis/
 .venv/
 .pytest_cache/
 .ruff_cache/
-tmp/*
-!tmp/docs/
+tmp/
