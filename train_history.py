@@ -39,7 +39,7 @@ DEFAULTS = dict(epochs=4.0, batch=64, chunk=1280, workers=4, lr=3e-4, final_lr=1
                 temporal_layers=4, history_length=1280,
                 compression_version='pair-unit1-aim1.5-cannon4-cap60-v1',
                 own_flight_slots=1, v2_global_dim=0, v2_entity_dim=0, v2_layout_sha256='',
-                numbered_checkpoints=1, split_query=0, split_alpha=0.5)
+                numbered_checkpoints=1, split_query=0, split_alpha=0.5, initial_checkpoint='')
 # final_lr: the learning rate falls linearly to lr x final_lr by the last step (1.0 = constant)
 # validation (31 Oct): after every pass, and every val_every steps (0 = only after passes; RUN/best.pt keeps the step with
 # the lowest 'val' loss); val_after 'YYYY-MM-DD': battles from that day on are left out of training and reported as
@@ -158,6 +158,13 @@ def train(data, out, settings):
         optimizer.load_state_dict(saved['optimizer'])
         step = saved['step']
         decisions_seen = saved.get('decisions_seen', 0)
+    elif settings['initial_checkpoint']:
+        saved = torch.load(settings['initial_checkpoint'], map_location='cpu', weights_only=True)
+        if 'optimizer' in saved:
+            raise ValueError('Initial checkpoint must be model-only; use latest.pt for optimizer resume')
+        if asdict(Config(**saved['config'])) != asdict(config) or saved['vocab'] != list(vocab.index):
+            raise ValueError('Initial checkpoint architecture or vocabulary mismatch')
+        policy.load_state_dict(saved['model'], strict=True)
     if cuda:  # measured faster on A100s (2026-10-14)
         for conv in getattr(policy, 'convs', ()):  # TokenPolicy has none
             conv.to(memory_format=torch.channels_last)
@@ -262,7 +269,7 @@ def train(data, out, settings):
     if rank == 0:
         (out / 'running.json').write_text(json.dumps({'pid': os.getpid(), 'step': step, 'total_steps': total,
                                                      'parameters': sum(p.numel() for p in policy.parameters()),
-                                                     'world_size': world}))
+                                                     'world_size': world, 'initial_checkpoint': settings['initial_checkpoint']}))
         print(f'TRAIN_READY step={step} total={total} world={world}', flush=True)
     while step < total:
         # a pass over the data; a resumed run starts a fresh order (seeded by the step it resumes at)

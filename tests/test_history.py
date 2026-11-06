@@ -88,7 +88,21 @@ def test_history_runner_uses_repo_modules(tmp_path, monkeypatch):
     assert saved['step'] == 1
     assert saved['config']['temporal_layers'] == 1
     assert (out / 'ranks.json').exists()
+    numbered = out / 'checkpoint-00000001.pt'
+    assert numbered.exists()
+    before = numbered.read_bytes()
     train_history.train(root, out, settings)
+    assert numbered.read_bytes() == before
+    initial = tmp_path / 'initial.pt'
+    torch.save({key: saved[key] for key in ('config', 'model', 'vocab')}, initial)
+    fresh = tmp_path / 'fresh'
+    fresh.mkdir()
+    train_history.train(root, fresh, settings | {'initial_checkpoint': str(initial)})
+    assert torch.load(fresh / 'latest.pt', weights_only=True)['step'] == 1
+    bad = tmp_path / 'bad'
+    bad.mkdir()
+    with pytest.raises(ValueError, match='model-only'):
+        train_history.train(root, bad, settings | {'initial_checkpoint': str(out / 'latest.pt')})
 
 
 def test_full_game_loader_rejects_long_game_and_collate_overflow(tmp_path, monkeypatch):

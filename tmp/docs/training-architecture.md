@@ -83,6 +83,49 @@ the attention saturation or efficient-SDPA backward residuals.
 `tools/migrate_splitquery.py` copies compatible baseline weights, initializes
 the condition branch from its original query and drops the baseline optimizer.
 It writes a model-only checkpoint; this is not exact optimizer continuation.
-Do not place it in `latest.pt` and call it a resume: use it for evaluation or
-an explicitly model-only warm start in an isolated comparison.
+Use `train_history.py --initial_checkpoint PATH` for an explicit warm start
+with matching architecture settings and fresh optimizer/step counters.
+Do not place a model-only checkpoint in `latest.pt` and call it a resume.
 Source: `tmp/history-splitquery-astra/splitquery.py`.
+
+## Comparison And Continuation
+
+`experiments/history_compare` retains the explicitly launched16-rank History31
+baseline/SplitQuery comparison and its continuation machinery. Dataset,
+checkpoint and output paths are arguments; no machine credentials, remote
+launchers, Pace observers, daemons or automatic stage transitions are included.
+Use `python -m experiments.history_compare.ddp_runner --help` and the analogous
+`continuation` module for the argument contracts.
+
+The comparison intentionally pins best30k model-only weights, fresh AdamW,
+GBS64/MBS4, two workers and the original42564-denominator LR formula.
+This is a historical protocol, not the generic training entry point.
+The continuation accepts only its own new-run model and optimizer, verifies
+manifest/source/order lineage, rotates logical workers at odd offsets and
+charges prior elapsed work against a cumulative budget. It preserves a3200
+snapshot (absolute33200). A time-bound exit is not a numerical failure.
+
+The migrated tools require receipts produced by this new frozen code. They
+must not replace code under the already-running historical experiment, and
+old source-hash receipts are deliberately rejected rather than silently
+relabeled. CPU replay tests do not prove CUDA bitwise replay. The separate
+SDPA tensor-only reproduction is retained as a diagnostic, not a remedy.
+
+The intent of SplitQuery is to address tile-attention collapse by preventing
+the shared card/core condition from dominating the position residual stream.
+This motivation comes from the `DBCR new architecture training` chat
+(`01a1ab71-4af0-7220-b8b3-df59c96661f2`). It is a proposed architectural fix,
+not a claim that the ongoing matched experiment has proved a lasting remedy.
+The causal history model likewise addresses the LSTM memory bottleneck and
+enables parallel causal training across decisions; streaming KV cache remains
+unimplemented. Compression bounds crowded-frame activation memory so full-game
+MBS4 training can run without gradient checkpointing.
+
+## Excluded Material
+
+Run outputs, raw/converted data, large tensors, manifests containing private
+machine locations, SSH/transfer files, SwanLab/Pace credentials, web viewers,
+automatic patrol/launch/stop scripts and duplicate frozen source trees remain
+outside the commits. `tmp/history-resume`'s separately re-warmed LR schedule is
+not substituted for the absolute LR of the matched SplitQuery continuation.
+No live-player deletions or unrelated macOS loader changes were carried over.

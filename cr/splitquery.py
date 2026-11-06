@@ -59,6 +59,8 @@ def install(model, alpha_initial=0.5):
         raise ValueError('SplitQuery is already installed')
     model.tile_blocks = nn.ModuleList([SplitQueryBlock(block, alpha_initial) for block in model.tile_blocks])
     model.tiles = MethodType(split_tiles, model)
+    model.config.split_query = True
+    model.config.split_alpha = alpha_initial
     return model
 
 
