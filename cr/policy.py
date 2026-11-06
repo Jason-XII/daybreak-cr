@@ -47,6 +47,9 @@ class Config:
     layers: int = 10
     heads: int = 6
     tile_layers: int = 2
+    temporal_layers: int = 0
+    history_length: int = 1280
+    compression_version: str = ''
 
 
 class ResBlock(nn.Module):
@@ -393,7 +396,7 @@ class TokenPolicy(nn.Module):
         table = torch.zeros(c.vocab_size, c.effect_fields) if effect_table is None else torch.as_tensor(effect_table)
         self.register_buffer('effect_table', table.float())
         self.effect = mlp(d + 1 + c.effect_fields, d, d)
-        self.object = mlp(3 * d + C.OBJ_FLOATS, D, D)
+        self.object = mlp(3 * d + C.OBJ_FLOATS + bool(c.compression_version), D, D)
         self.summary = mlp(C.SCALARS, D, D)
         self.hand = mlp(2 * d + C.HAND_FLOATS, D, D)
         self.cycle = nn.Linear(d, D)
@@ -434,8 +437,11 @@ class TokenPolicy(nn.Module):
         eff = torch.cat([card(f['eff_id']), f['eff_left'].unsqueeze(-1),
                          self.effect_table[known(f['eff_id'], self.effect_table.shape[0])]], -1)
         eff = (self.effect(eff) * (f['eff_id'] > 0).unsqueeze(-1)).sum(-2)
-        objects = self.object(torch.cat([card(f['obj_card']), card(f['obj_data']) + self.side(f['obj_side']) +
-                                         self.kind(f['obj_kind']), eff, f['obj_float']], -1))
+        object_parts = [card(f['obj_card']), card(f['obj_data']) + self.side(f['obj_side']) +
+                        self.kind(f['obj_kind']), eff, f['obj_float']]
+        if self.config.compression_version:
+            object_parts.append(f['obj_count'].clamp_min(1).log().unsqueeze(-1))
+        objects = self.object(torch.cat(object_parts, -1))
         flight_card = torch.cat([f['own_flight_card'].reshape(N, 1), f['opp_flight_card']], 1)
         flight_float = torch.cat([f['own_flight_float'].reshape(N, 1, 4), f['opp_flight_float']], 1)
         fixed = torch.cat([
@@ -497,7 +503,19 @@ class TokenPolicy(nn.Module):
 
 
 def build(config, effect_table=None, card_table=None):
-    return (TokenPolicy if config.arch == 2 else Policy)(config, effect_table, card_table)
+    if config.compression_version not in ('', 'pair-unit1-aim1.5-cannon4-cap60-v1'):
+        raise ValueError('Unknown entity compression recipe')
+    if config.temporal_layers < 0 or config.history_length <= 0:
+        raise ValueError('Invalid temporal architecture bounds')
+    if config.temporal_layers and (config.arch != 2 or config.core != config.width):
+        raise ValueError('History model requires arch2 and core equal to token width')
+    if config.compression_version and config.arch != 2:
+        raise ValueError('Compressed entity inputs require TokenPolicy')
+    model = (TokenPolicy if config.arch == 2 else Policy)(config, effect_table, card_table)
+    if config.temporal_layers:
+        from cr.history import TemporalCore
+        model.lstm = TemporalCore(config.width, config.heads, config.temporal_layers, config.history_length)
+    return model
 
 
 TILE_KEYS = ('core', 'grid', 'tokens', 'xy', 'known', 'present')  # what tiles() reads from a forward pass (either network)

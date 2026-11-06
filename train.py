@@ -114,7 +114,7 @@ def train(data, out, settings):
     step, decisions_seen = 0, 0
     if (out / 'latest.pt').exists():
         saved = torch.load(out / 'latest.pt', map_location='cpu', weights_only=True)
-        if saved['config'] != asdict(config) or saved['vocab'] != list(vocab.index):
+        if asdict(Config(**saved['config'])) != asdict(config) or saved['vocab'] != list(vocab.index):
             raise ValueError('Checkpoint architecture or vocabulary mismatch')
         policy.load_state_dict(saved['model'])
         optimizer.load_state_dict(saved['optimizer'])
