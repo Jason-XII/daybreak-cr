@@ -397,7 +397,8 @@ class TokenPolicy(nn.Module):
         self.summary = mlp(C.SCALARS, D, D)
         self.hand = mlp(2 * d + C.HAND_FLOATS, D, D)
         self.cycle = nn.Linear(d, D)
-        self.ability = mlp(d + C.ABILITY_FLOATS, D, D)
+        ability_floats = C.ABILITY_FLOATS if c.inputs >= 2 else V1_ABILITY_FLOATS
+        self.ability = mlp(d + ability_floats, D, D)
         self.flight = mlp(d + 4, D, D)
         self.seen = mlp(d + 3, D, D)
         self.hero = nn.Linear(d, D)
@@ -424,6 +425,8 @@ class TokenPolicy(nn.Module):
     def forward(self, x, state=None):
         """x: dict of [B, T, ...] tensors -> what [B, T, 4], which [B, T, 4], core [B*T, core], value [B, T], state, and
         for tiles(): tokens [B*T, L, width], xy [B*T, L, 2] (tiles), known, present [B*T, L]."""
+        if self.config.inputs < 2:
+            x = v1_inputs(x)
         B, T = x['scalars'].shape[:2]
         N, D = B * T, self.config.width
         f = {k: v.reshape(N, *v.shape[2:]) for k, v in x.items()}
@@ -724,4 +727,3 @@ def convolution_layout(model):
         conv.to(memory_format=torch.channels_last)
     model.convs[0].register_forward_pre_hook(
         lambda m, a: (a[0].contiguous(memory_format=torch.channels_last),))
-
