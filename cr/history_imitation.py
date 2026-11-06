@@ -140,7 +140,7 @@ def chunks(data, chunk, validation, rng):
             if name.startswith('t_'):
                 t[k] = v[s:e]
             elif name.startswith('x_'):
-                if k in C.OBJECT_KEYS:
+                if k in (*C.OBJECT_KEYS, 'v2_entity'):
                     a = np.zeros((e - s, n, *v.shape[1:]), v.dtype)
                     for i, count in enumerate(counts):
                         a[i, :count] = v[offsets[s + i]:offsets[s + i + 1]]
@@ -175,10 +175,14 @@ def ability_labels(data):
 class Games(torch.utils.data.IterableDataset):
     """The player views of a dataset in a seeded random order (validation: in order), split over ranks and workers."""
 
-    def __init__(self, root, entries, chunk, seed, validation=False, rank=0, world=1, fix_abilities=False, cannon_index=0):
+    def __init__(self, root, entries, chunk, seed, validation=False, rank=0, world=1, fix_abilities=False, cannon_index=0,
+                 v2_layouts=None, vocab=None):
         self.root, self.entries, self.chunk, self.seed = Path(root), entries, chunk, seed
         self.validation, self.rank, self.world, self.fix_abilities = validation, rank, world, fix_abilities
         self.cannon_index = cannon_index
+        self.v2_layouts, self.vocab = v2_layouts, vocab
+        if v2_layouts is not None and (vocab is None or fix_abilities):
+            raise ValueError('V2 data requires frozen vocabulary and no ability relabeling')
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
@@ -196,7 +200,15 @@ class Games(torch.utils.data.IterableDataset):
 
     def _block(self, entries, rng):
         for e in entries:
-            data = read(self.root / e['file'], e['owner'])
+            if self.v2_layouts is None:
+                data = read(self.root / e['file'], e['owner'])
+            else:
+                from cr.inputs_v2.v2_dataset import read as read_v2
+                archive = self.root / e['base_archive']
+                if not archive.resolve().is_relative_to(self.root.resolve()):
+                    raise ValueError('Base archive must be inside the delivered dataset')
+                data = read_v2(self.root / e['file'], e['owner'], self.vocab, self.v2_layouts,
+                               archive_path=archive, expected_sha256=e['sha256'])
             if e['decisions'] > self.chunk:
                 raise ValueError('Full-history training must not split a game')
             for x,t in chunks(ability_labels(data) if self.fix_abilities else data, self.chunk, self.validation, rng):
@@ -214,9 +226,9 @@ def collate(items):
     O = min(60, math.ceil(O / 8) * 8)
 
     def pad(a, k):
-        if k in OBJECT_KEYS:
+        if k in (*OBJECT_KEYS, 'v2_entity'):
             a = a[:, :O]
-        out = np.zeros((L, O, *a.shape[2:]) if k in OBJECT_KEYS else (L, *a.shape[1:]), a.dtype)
+        out = np.zeros((L, O, *a.shape[2:]) if k in (*OBJECT_KEYS, 'v2_entity') else (L, *a.shape[1:]), a.dtype)
         out[(slice(0, len(a)), *map(slice, a.shape[1:]))] = a
         return out
     xs = {k: torch.from_numpy(np.stack([pad(x[k], k) for x, _ in items])) for k in items[0][0]}

@@ -50,6 +50,10 @@ class Config:
     temporal_layers: int = 0
     history_length: int = 1280
     compression_version: str = ''
+    own_flight_slots: int = 1
+    v2_global_dim: int = 0
+    v2_entity_dim: int = 0
+    v2_layout_sha256: str = ''
 
 
 class ResBlock(nn.Module):
@@ -386,6 +390,7 @@ class TokenPolicy(nn.Module):
         super().__init__()
         c = self.config = config
         d, D = c.card_dim, c.width
+        self.fixed = FIXED + c.own_flight_slots - 1
         if c.card_stats:
             table = torch.zeros(c.vocab_size, c.card_stats) if card_table is None else torch.as_tensor(card_table)
             self.card = CardEmbedding(c.vocab_size, d, table)
@@ -398,6 +403,8 @@ class TokenPolicy(nn.Module):
         self.effect = mlp(d + 1 + c.effect_fields, d, d)
         self.object = mlp(3 * d + C.OBJ_FLOATS + bool(c.compression_version), D, D)
         self.summary = mlp(C.SCALARS, D, D)
+        self.v2_global = nn.Linear(c.v2_global_dim, D, bias=False) if c.v2_global_dim else None
+        self.v2_entity = nn.Linear(c.v2_entity_dim, D, bias=False) if c.v2_entity_dim else None
         self.hand = mlp(2 * d + C.HAND_FLOATS, D, D)
         self.cycle = nn.Linear(d, D)
         ability_floats = C.ABILITY_FLOATS if c.inputs >= 2 else V1_ABILITY_FLOATS
@@ -405,7 +412,7 @@ class TokenPolicy(nn.Module):
         self.flight = mlp(d + 4, D, D)
         self.seen = mlp(d + 3, D, D)
         self.hero = nn.Linear(d, D)
-        self.slot = nn.Parameter(torch.zeros(FIXED + 1, D))  # which token it is (the last row: any object)
+        self.slot = nn.Parameter(torch.zeros(self.fixed + 1, D))  # the last row is shared by objects
         self.bias = Bias(c.heads)
         self.encoder = nn.ModuleList([Block(D, c.heads) for _ in range(c.layers)])
         self.norm = nn.LayerNorm(D)
@@ -442,17 +449,26 @@ class TokenPolicy(nn.Module):
         if self.config.compression_version:
             object_parts.append(f['obj_count'].clamp_min(1).log().unsqueeze(-1))
         objects = self.object(torch.cat(object_parts, -1))
-        flight_card = torch.cat([f['own_flight_card'].reshape(N, 1), f['opp_flight_card']], 1)
-        flight_float = torch.cat([f['own_flight_float'].reshape(N, 1, 4), f['opp_flight_float']], 1)
+        if self.v2_entity is not None:
+            members = self.v2_entity(f['v2_entity'])
+            if members.ndim == 4:
+                members = members.sum(-2) / f['obj_count'].clamp_min(1).unsqueeze(-1)
+            objects = objects + members
+        summary = self.summary(f['scalars'])
+        if self.v2_global is not None:
+            summary = summary + self.v2_global(f['v2_global'])
+        slots = self.config.own_flight_slots
+        flight_card = torch.cat([f['own_flight_card'].reshape(N, slots), f['opp_flight_card']], 1)
+        flight_float = torch.cat([f['own_flight_float'].reshape(N, slots, 4), f['opp_flight_float']], 1)
         fixed = torch.cat([
-            self.summary(f['scalars']).unsqueeze(1),
+            summary.unsqueeze(1),
             self.hand(torch.cat([card(f['hand_card']), card(f['mirror_card']), f['hand_float']], -1)),
             self.cycle(card(f['cycle_card'])),
             self.ability(torch.cat([card(f['ability_card']), f['ability']], -1)),
             self.flight(torch.cat([card(flight_card), flight_float], -1)),
             self.seen(torch.cat([card(f['opp_seen_card']), f['opp_seen_float']], -1)),
-            self.hero(card(f['opp_hero_card']))], 1) + self.slot[:FIXED]
-        tokens = torch.cat([fixed, objects + self.slot[FIXED]], 1)
+            self.hero(card(f['opp_hero_card']))], 1) + self.slot[:self.fixed]
+        tokens = torch.cat([fixed, objects + self.slot[self.fixed]], 1)
         yes = torch.ones(N, 5, dtype=torch.bool, device=tokens.device)  # summary and hand: always (ability below too)
         present = torch.cat([yes, f['cycle_card'] > 0, yes[:, :2], flight_card > 0, f['opp_seen_card'] > 0,
                              f['opp_hero_card'] > 0, f['obj_side'] > 0], 1)
@@ -460,7 +476,7 @@ class TokenPolicy(nn.Module):
         xy = torch.cat([none(11), flight_float[..., :2].float(), none(10), f['obj_float'][..., :2].float()], 1)
         xy = torch.stack([xy[..., 0] * W, xy[..., 1] * H], -1)  # no host tensor: CUDA graph capture forbids the copy
         located = present.clone()
-        located[:, :11], located[:, 14:FIXED] = False, False
+        located[:, :11], located[:, 13 + slots:self.fixed] = False, False
         mask = self.bias(xy, xy, located, located, present)
         for block in self.encoder:
             tokens = block(tokens, None, mask)
@@ -511,6 +527,13 @@ def build(config, effect_table=None, card_table=None):
         raise ValueError('History model requires arch2 and core equal to token width')
     if config.compression_version and config.arch != 2:
         raise ValueError('Compressed entity inputs require TokenPolicy')
+    if config.own_flight_slots not in (1, 2) or (config.own_flight_slots == 2 and config.arch != 2):
+        raise ValueError('Two own pending slots require TokenPolicy')
+    if bool(config.v2_global_dim) != bool(config.v2_entity_dim) or min(config.v2_global_dim, config.v2_entity_dim) < 0:
+        raise ValueError('Both V2 projection dimensions must be positive or disabled')
+    if config.v2_global_dim and (config.arch != 2 or config.inputs != 2 or config.own_flight_slots != 2
+                                or not config.v2_layout_sha256 or not config.compression_version):
+        raise ValueError('V2 projections require inputs2, own2, a layout binding and entity counts')
     model = (TokenPolicy if config.arch == 2 else Policy)(config, effect_table, card_table)
     if config.temporal_layers:
         from cr.history import TemporalCore
@@ -582,7 +605,8 @@ def what_logp(what, x, explore=0.0, which=None, overlap=False):
     if 'live_abilities' in x:
         allowed = x['live_abilities'].bool()
         what = what.masked_fill(torch.cat([torch.zeros_like(allowed), ~allowed], -1), float('-inf'))
-    busy = (x['own_flight_card'] > 0).unsqueeze(-1) & (torch.arange(4, device=what.device) >= (ABILITY1 if overlap else PLAY))
+    busy = (x['own_flight_card'] > 0).reshape(*what.shape[:-1], -1).any(-1, keepdim=True) & \
+        (torch.arange(4, device=what.device) >= (ABILITY1 if overlap else PLAY))
     logp = _log_softmax(what.float().masked_fill(busy, float('-inf')))
     if which is not None and 'scalars' in x:
         base = _log_softmax(which.float().masked_fill(~x['legal'].flatten(2).any(-1), float('-inf')))
@@ -620,9 +644,11 @@ def playable(x, overlap=False):
     s = x['scalars'].float()
     elixir = 10 * s[:, 0]
     if overlap:
-        flying = x['own_flight_card'].reshape(-1)
-        legal = legal & ~((x['hand_card'].reshape(-1, 4) == flying[:, None]) & (flying[:, None] > 0))
-        elixir = elixir - 10 * x['own_flight_float'].reshape(-1, 4)[:, 3].float() * (flying > 0)
+        flying = x['own_flight_card'].reshape(len(elixir), -1)
+        reserved = ((x['hand_card'].reshape(-1, 4, 1) == flying[:, None]) & (flying[:, None] > 0)).any(-1)
+        legal = legal & ~reserved
+        prices = x['own_flight_float'].reshape(len(elixir), -1, 4)[..., 3].float()
+        elixir = elixir - 10 * (prices * (flying > 0)).sum(-1)
     rate = s[:, 2] + 2 * s[:, 3] + 3 * s[:, 4]
     cost = 10 * x['hand_float'][..., 0].float()
     return legal & (cost <= (elixir + HOLD_ELIXIR * rate + 1e-3).unsqueeze(-1))

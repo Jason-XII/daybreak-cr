@@ -5,6 +5,22 @@ OBJECT_KEYS = ('obj_card', 'obj_data', 'obj_side', 'obj_kind', 'obj_float', 'eff
 CANNON_BARRAGE = 2119760969
 
 
+def object_keys(x):
+    return OBJECT_KEYS + (('v2_entity',) if 'v2_entity' in x else ())
+
+
+def grouped_v2(values, groups):
+    if values.ndim != 3 or values.shape[1] != 2:
+        raise ValueError('V2 entity features require two member slots')
+    if np.any(values[:, 1] != 0):
+        raise ValueError('Cannot recursively merge v2 entity pairs')
+    output = np.zeros((len(groups), 2, values.shape[-1]), values.dtype)
+    for index, members in enumerate(groups):
+        for slot, member in enumerate(members):
+            output[index, slot] = values[member, 0]
+    return output
+
+
 def pairs(x, eligible, coordinates, radius, unit=False):
     if not eligible.any():
         return []
@@ -66,6 +82,8 @@ def compress_frame(inputs, cannon_index):
     first = np.array([g[0] for g in groups])
     result = {k: np.stack([v[g].mean(0) for g in groups]).astype(v.dtype)
               if k in ('obj_float', 'eff_left') else v[first].copy() for k, v in x.items()}
+    if 'v2_entity' in x:
+        result['v2_entity'] = grouped_v2(x['v2_entity'], groups)
     result['obj_count'] = np.array([len(g) for g in groups], np.float32)
     mf = result['obj_float']
     mpos = mf[:, :2].astype(np.float64)*[18,32]
@@ -98,12 +116,12 @@ def compress_chunk(x, cannon_index):
     rows, stats = [], []
     for t in range(len(x['obj_side'])):
         n = int((x['obj_side'][t] > 0).sum())
-        row, telemetry = compress_frame({k:x[k][t,:n] for k in OBJECT_KEYS if k != 'obj_count'}, cannon_index)
+        row, telemetry = compress_frame({k:x[k][t,:n] for k in object_keys(x) if k != 'obj_count'}, cannon_index)
         rows.append(row)
         stats.append(telemetry)
     width = max(1, max(len(r['obj_side']) for r in rows))
     result = dict(x)
-    for k in OBJECT_KEYS:
+    for k in object_keys(x):
         exemplar = rows[0][k]
         a = np.zeros((len(rows), width, *exemplar.shape[1:]), exemplar.dtype)
         for t,row in enumerate(rows):

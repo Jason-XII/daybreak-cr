@@ -40,3 +40,33 @@ The historical state-dict layout is preserved. Historical sources were
 `tmp/history-train/model.py`, `compression.py`, `imitation.py`, `train.py` and
 `source/cr/policy.py`. The full-history model has not been given a streaming
 online-state implementation; do not infer online/PPO readiness from loading.
+
+## Captured V2 Inputs
+
+`cr/inputs_v2` contains the pinned IN/OUT field contract, owner-relative
+canonicalization, bounded episode decoding, signed-log numeric channels with
+independent validity bits and hash-bound frozen-archive joining. The adapter
+rejects hidden opponent deck information, future commands, unclassified fields,
+unseen layout positions and entity sets that differ from the frozen archive.
+
+Configure `train_history.py` with `inputs=2`, `own_flight_slots=2`, both
+`v2_*_dim` values and `v2_layout_sha256`. It requires `v2-layout.json` with
+full verified scope and a manifest using `inputs-v2-history31-own2`.
+Do not launch from a sample layout. Model loading reconstructs both new
+projections and the25-token fixed layout, without changing legacy defaults.
+
+Two separate member rows survive compression, rather than averaging discrete
+IDs. Both own pending cards reserve their costs. New episodes use the accepted
+six-tick queue; the legacy singleton feature builder stays unchanged.
+`tools/v2_build_layout.py` scans verified shards;
+`tools/v2_merge_layout.py` unions their complete layouts;
+`tools/v2_build_training_manifest.py` exposes `assemble` for the relocatable
+episode/base-archive manifest. Dataset generation/export remains a separate
+pipeline, not a side effect of training.
+
+The adapter came from `tmp/history-v2-train`. This is the captured five-tick
+V2 profile, not a claim of every-tick/full native state. Discrete IDs still use
+the experimental signed-log representation; no new identity embedding or
+quality claim is implied. The frozen old labels and vocabulary are preserved.
+`numbered_checkpoints=1` retains periodic and final optimizer checkpoints by
+hardlink before the next atomic latest-file replacement.

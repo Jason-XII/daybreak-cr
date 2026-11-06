@@ -37,7 +37,9 @@ DEFAULTS = dict(epochs=4.0, batch=64, chunk=1280, workers=4, lr=3e-4, final_lr=1
                 swanlab_mode='disabled', swanlab_project='DayBCR', swanlab_workspace='Terrasse', swanlab_name='',
                 seed=0, log_every=50, checkpoint_every=1000, compile_blocks=1, device='cuda',
                 temporal_layers=4, history_length=1280,
-                compression_version='pair-unit1-aim1.5-cannon4-cap60-v1')
+                compression_version='pair-unit1-aim1.5-cannon4-cap60-v1',
+                own_flight_slots=1, v2_global_dim=0, v2_entity_dim=0, v2_layout_sha256='',
+                numbered_checkpoints=1)
 # final_lr: the learning rate falls linearly to lr x final_lr by the last step (1.0 = constant)
 # validation (31 Oct): after every pass, and every val_every steps (0 = only after passes; RUN/best.pt keeps the step with
 # the lowest 'val' loss); val_after 'YYYY-MM-DD': battles from that day on are left out of training and reported as
@@ -79,6 +81,12 @@ def train(data, out, settings):
     manifest_path = Path(data) / settings.get('manifest', 'manifest.json')
     manifest = json.loads(manifest_path.read_text())
     vocab = C.Vocab(manifest['schema']['vocab'])
+    v2_layouts = None
+    if settings['v2_global_dim'] or settings['v2_entity_dim']:
+        from cr.inputs_v2.v2_dataset import load_layout
+        v2_layouts = load_layout(data, manifest, settings)
+    elif manifest.get('input_profile', '').startswith('inputs-v2-history'):
+        raise ValueError('A V2 dataset requires the complete hash-bound input adapter')
     cannon_index = vocab(CANNON_BARRAGE)
     if cannon_index <= 1 or settings['chunk'] != settings['history_length']:
         raise ValueError('Expected known cannon barrage and full-history chunk1280')
@@ -118,7 +126,8 @@ def train(data, out, settings):
                     **{k: settings.get(k, v) for k, v in dict(res_blocks=0, flight_grid=0, tile_blocks=0, board_rows=8,
                                                               board_cols=4, res_norm=1, dist_bias=0, arch=1, width=384, layers=10,
                                                               heads=6, tile_layers=2).items()},
-                    **{k: settings[k] for k in ('temporal_layers', 'history_length', 'compression_version')})
+                    **{k: settings[k] for k in ('temporal_layers', 'history_length', 'compression_version',
+                                               'own_flight_slots', 'v2_global_dim', 'v2_entity_dim', 'v2_layout_sha256')})
     policy = build(config, C.effect_matrix(vocab), stats).to(device)
     if settings['compile_blocks'] and cuda:
         for block in [*policy.encoder, *policy.tile_blocks, *policy.lstm.blocks]:
@@ -195,6 +204,10 @@ def train(data, out, settings):
             torch.save(dict(config=asdict(config), model=policy.state_dict(), optimizer=optimizer.state_dict(),
                             step=step, decisions_seen=decisions_seen, settings=settings, vocab=list(vocab.index)), tmp)
             tmp.replace(out / 'latest.pt')
+            if settings['numbered_checkpoints'] and (step % settings['checkpoint_every'] == 0 or step == total or timed_out):
+                numbered = out / f'checkpoint-{step:08d}.pt'
+                if not numbered.exists():
+                    os.link(out / 'latest.pt', numbered)
 
     def gather_window(rows):
         if world == 1:
@@ -205,7 +218,7 @@ def train(data, out, settings):
 
     def loader(entries, seed, validation=False, rank=0, world=1):
         return torch.utils.data.DataLoader(Games(data, entries, settings['chunk'], seed, validation, rank, world,
-                                                 bool(settings.get('ability_labels')), cannon_index),
+                                                 bool(settings.get('ability_labels')), cannon_index, v2_layouts, vocab),
                                            batch_size=(settings.get('validation_batch') or micro_batch) if validation else micro_batch,
                                            num_workers=settings['workers'], collate_fn=collate,
                                            pin_memory=cuda)
