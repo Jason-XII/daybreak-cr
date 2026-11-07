@@ -45,8 +45,9 @@ def _rollout(engine, play, owner, start, princess, horizon, material):
     return score(state, start, owner, princess, material)
 
 
-def search(engine, candidates, owner, start, horizon=160, material=0.3, timeout=30):
-    """Each candidate Play in its own forked child, all at once -> [score or None (failed / timed out)]."""
+def search(engine, candidates, owner, start, horizon=160, material=0.3, timeout=30, rollout=None):
+    """Each candidate Play in its own forked child, all at once -> [score or None (failed / timed out)]. rollout(play) ->
+    a float, run in the child: another way to play the copy out and score it (experiments/search_arena.py)."""
     princess = princess_hp(start)
     kids = []
     for play in candidates:
@@ -55,7 +56,7 @@ def search(engine, candidates, owner, start, horizon=160, material=0.3, timeout=
         if pid == 0:
             os.close(rd)
             try:
-                res = _rollout(engine, play, owner, start, princess, horizon, material)
+                res = rollout(play) if rollout else _rollout(engine, play, owner, start, princess, horizon, material)
             except BaseException as e:  # noqa: BLE001
                 res = repr(e)
             os.write(wr, pickle.dumps(res))

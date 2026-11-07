@@ -486,11 +486,14 @@ DEFAULTS = dict(updates=100000, batch=512, max_lag=4, lr=2e-5, epochs=2, minibat
                 channels_last=True, against='', frozen_temperature=1.0, learner_temperature=1.0,
                 learner_mix=0.0, bc_index='', bc_coef=0.2, bc_batch=8, overlap=False,
                 search_frac=0.0, search_k=8, search_horizon=160, search_material=0.3, search_coef=0.5, search_tau=0.05,
-                search_margin=0.02, engine_lib='', engine_assets='')
+                search_margin=0.02, engine_lib='', engine_assets='', activation_checkpoint=False)
 # search_*: placement search in the actors (cr/search.py; 27 Oct): in search_frac of the learning games the learning seat's
 # card plays are also tried at its top search_k tiles, each played search_horizon ticks in a forked copy; PPO still
 # learns the tile played, and the tile head learns the search's ranking (search_loss, weight search_coef).
 # engine_lib / engine_assets: an engine build and its game data (e.g. ~/conv-1025/ENGINES/160402020, DATA/d22).
+# activation_checkpoint: TokenPolicy's encoder recomputes its activations in the backward pass: ~20% slower, a quarter of the
+# memory (4 Nov, tokenL on the longest games: minibatch 2 peaks 23.8 GB without, 6.4 GB with; minibatch 4 70.8 / 17.7 GB of
+# an A100's 79 GB). The older Policy ignores it.
 
 
 
@@ -514,6 +517,7 @@ def learn(args, settings):
     model.temperature = reference.temperature = s.learner_temperature  # trains (and is anchored) as it plays
     model.mix = reference.mix = s.learner_mix
     model.overlap = reference.overlap = s.overlap  # samples (and is scored) under the run's overlap rule
+    model.checkpoint = critic.trunk.checkpoint = getattr(s, 'activation_checkpoint', False)
     optimizer = torch.optim.Adam(model.parameters(), lr=s.lr)
     critic_optimizer = torch.optim.Adam(critic.parameters(), lr=s.critic_lr)
     version = fresh = 0
@@ -629,6 +633,8 @@ def learn(args, settings):
         for group in critic_optimizer.param_groups:
             group['lr'] = s.critic_lr * ramp
         batches = minibatches(games, s, device)
+        if cuda:
+            torch.cuda.reset_peak_memory_stats(device)
         stats = dict(prepare_s=time.monotonic() - t1)
         t_targets = time.monotonic()
         stats.update(critic_targets(batches, critic, s, device))
@@ -642,6 +648,8 @@ def learn(args, settings):
         t_critic = time.monotonic()
         stats.update(train_critic(critic, critic_optimizer, batches, s, device, critic_objective),
                      critic_s=time.monotonic() - t_critic)
+        if cuda:  # the most this update held at once, of the GPU's total
+            stats['gpu_peak_gb'] = torch.cuda.max_memory_allocated(device) / 2**30
         del batches
         version += 1
         champion = follow_champion(champion)

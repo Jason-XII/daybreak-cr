@@ -1,5 +1,6 @@
 """Live play's bookkeeping: plays confirmed by the hand, screen coordinates, the reader's target pointers."""
 import json
+import pytest
 
 import play
 
@@ -116,3 +117,33 @@ def test_the_opponents_plays_also_land_from_their_hand_when_the_queue_has_none()
     plays.update(two(130, [command(2, 27, 141)], theirs=(4, 1, 2, 3)))
     landed = plays.update(two(142, theirs=(4, 0, 2, 3)))
     assert [(t, c['card_id']) for t, c in landed] == [(121, 26), (141, 27)]
+
+
+def test_netwatch_reads_the_game_connection_from_nettop(monkeypatch):
+    import subprocess
+    import play
+    out = (',state,bytes_in,bytes_out,re-tx,rtt_avg,rtt_var,\n'
+           'qemu-system-aar.1,,10,20,0,,,\n'
+           'tcp4 127.0.0.1:5555<->127.0.0.1:631,Established,5,6,0,1.22 ms,0.19 ms,\n'
+           'tcp4 10.0.0.2:63213<->135.125.24.77:9339,Established,368139,33763,823,351.75 ms,10.62 ms,\n')
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0, out, ''))
+    watch = play.NetWatch.__new__(play.NetWatch)
+    assert watch.sample({'135.125.24.77:9339'}) == {'server': '135.125.24.77:9339', 'rtt_ms': 351.75, 'rtt_var_ms': 10.62,
+                                                     'retx_bytes': 823, 'bytes_in': 368139, 'bytes_out': 33763}
+    assert watch.sample({'1.2.3.4:9339'}) is None
+
+
+def test_next_battle_takes_a_moving_battle_at_any_tick_but_never_a_finished_one():
+    from types import SimpleNamespace
+    import play
+    client = SimpleNamespace(seat='roster')  # 'roster': our side is found later, not here
+    f = lambda battle, tick: {'battle_active': True, 'failure': 'none', 'chain': {'battle': battle}, 'game_tick': tick}  # noqa: E731
+    results = [f('a', 2022)] * 50  # the finished battle's results screen: active, clock still
+    # results screen, then the same battle re-entered and moving again past where it stopped
+    assert play.next_battle(iter(results + [f('a', 2030), f('a', 2035)]), client, ('a', 2022))['game_tick'] == 2030
+    # a re-entered battle under a new address, already at tick 2100 (the old rule wanted tick < 90)
+    assert play.next_battle(iter(results + [f('b', 2100), f('b', 2105)]), client, ('a', 2022))['chain']['battle'] == 'b'
+    # started while a battle runs: it counts once its clock moves; a still one does not
+    assert play.next_battle(iter([f('c', 500), f('c', 500), f('c', 505)]), client, None)['game_tick'] == 505
+    with pytest.raises(StopIteration):
+        play.next_battle(iter(results), client, ('a', 2022))

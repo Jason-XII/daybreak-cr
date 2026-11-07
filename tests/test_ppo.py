@@ -20,12 +20,14 @@ from synthetic import arrays, dataset
 
 
 @pytest.mark.parametrize('option', [dict(conv_channels=4, conv_layers=1),
-                                    dict(conv_channels=8, conv_layers=2, res_blocks=1, tile_blocks=1)])  # 21 Oct network
+                                    dict(conv_channels=8, conv_layers=2, res_blocks=1, tile_blocks=1),  # 21 Oct network
+                                    dict(arch=2, width=16, layers=2, heads=2, tile_layers=1)])  # TokenPolicy, checkpointed
 def test_packed_inputs_and_ppo_update(tmp_path, monkeypatch, option):
     root = dataset(tmp_path / 'data', monkeypatch)
     vocab = C.Vocab([26000000])
     torch.manual_seed(0)
-    model = policy.Policy(policy.Config(vocab_size=len(vocab), card_dim=4, object_dim=4, core=8, attention_layers=0, **option))
+    model = policy.build(policy.Config(vocab_size=len(vocab), card_dim=4, object_dim=4, core=8, attention_layers=0, **option))
+    model.checkpoint = True  # only TokenPolicy reads it
     trajectories = []
     for entry in json.loads((root / 'manifest.json').read_text())['entries']:
         x, _ = next(imitation.chunks(imitation.read(root / entry['file'], entry['owner']), 300, True, None))

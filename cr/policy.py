@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from cr import observation as C
 
@@ -378,7 +379,11 @@ class TokenPolicy(nn.Module):
     """arch 2 (2 Nov): every input is a token of one transformer (objects, the hand, the cycle, the ability buttons, plays
     in flight, the opponent's seen cards and heroes, and a summary token carrying the scalars), attention biased by where
     two tokens are. The summary token feeds the LSTM; a hand card is chosen by pointing at its token; the tiles are 576
-    queries (tile + core + the chosen card's token) attending to the tokens. Same outputs and tiles() as Policy."""
+    queries (tile + core + the chosen card's token) attending to the tokens. Same outputs and tiles() as Policy.
+    checkpoint (set by the PPO learner, not saved): the encoder blocks keep only their inputs and recompute the rest in
+    the backward pass, so whole games fit on a GPU (about a third more encoder compute)."""
+    checkpoint = False
+
     def __init__(self, config: Config, effect_table=None, card_table=None):
         super().__init__()
         c = self.config = config
@@ -454,7 +459,10 @@ class TokenPolicy(nn.Module):
         located[:, :11], located[:, 14:FIXED] = False, False
         mask = self.bias(xy, xy, located, located, present)
         for block in self.encoder:
-            tokens = block(tokens, None, mask)
+            if self.checkpoint and torch.is_grad_enabled():
+                tokens = checkpoint(block, tokens, None, mask, use_reentrant=False)
+            else:
+                tokens = block(tokens, None, mask)
         tokens = self.norm(tokens)
         core, state = self.lstm(tokens[:, 0].reshape(B, T, D), state)
         flat_core = core.reshape(N, -1)

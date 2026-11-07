@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 
@@ -71,10 +72,71 @@ class Client(SimpleNamespace):
 
 
 def adb(serial, *arguments, check=True):
-    result = subprocess.run([ADB, '-s', serial, *map(str, arguments)], capture_output=True, text=True)
+    result = subprocess.run([ADB, '-s', serial, *map(str, arguments)], capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL)
     if check and result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or 'adb command failed')
     return result
+
+
+class NetWatch:
+    """The game server connection's round-trip time during a battle: every `every` s a 'net' row (rtt_ms, rtt_var_ms,
+    retransmitted bytes, since the battle started) and at close a 'net_summary'. Measured on the Mac with nettop, on the
+    emulator's own connection: inside the emulator a socket ends at its NAT, so its RTT means nothing (1.5 ms).
+    4 Nov 2026, Nulls 135.125.24.77:9339: ~350 ms. A tap the server never confirms while the RTT stays normal points at
+    the server, not the network."""
+
+    def __init__(self, client, log, every=5.0):
+        self.client, self.log, self.every = client, log, every
+        self.started, self.rtts, self.stop = time.monotonic(), [], threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def servers(self):
+        """The game's established connections (not web ports) as 'ip:port', from the emulator's /proc."""
+        table = adb(self.client.serial, 'shell', f'cat /proc/$(pidof {self.client.package})/net/tcp', check=False).stdout
+        out = set()
+        for line in table.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) > 3 and parts[3] == '01':
+                address, port = parts[2].split(':')
+                ip, port = '.'.join(str(b) for b in bytes.fromhex(address)[::-1]), int(port, 16)
+                if port not in (80, 443) and not ip.startswith('127.'):
+                    out.add(f'{ip}:{port}')
+        return out
+
+    def sample(self, servers):
+        lines = subprocess.run(['nettop', '-m', 'tcp', '-L', '1', '-n', '-J', 'state,bytes_in,bytes_out,re-tx,rtt_avg,rtt_var'],
+                               capture_output=True, text=True, timeout=10).stdout.splitlines()
+        header = lines[0].split(',')
+        for line in lines[1:]:
+            values = line.split(',')
+            fields, name = dict(zip(header[1:], values[1:])), values[0]  # column 0: the connection (its header is empty)
+            if '<->' in name and name.split('<->')[1] in servers and fields.get('state') == 'Established':
+                ms = lambda v: float(v.split()[0]) if v else None  # noqa: E731
+                return {'server': name.split('<->')[1], 'rtt_ms': ms(fields['rtt_avg']), 'rtt_var_ms': ms(fields['rtt_var']),
+                        'retx_bytes': int(fields['re-tx'] or 0), 'bytes_in': int(fields['bytes_in'] or 0),
+                        'bytes_out': int(fields['bytes_out'] or 0)}
+        return None
+
+    def _run(self):
+        servers = set()
+        while not self.stop.wait(self.every):
+            try:
+                servers = servers or self.servers()
+                row = self.sample(servers)
+            except Exception as error:  # noqa: BLE001 - never stop a battle for a measurement
+                self.log({'event': 'net_error', 'error': repr(error)})
+                return
+            if row:
+                self.rtts.append(row['rtt_ms'])
+                self.log({'event': 'net', 'battle_s': round(time.monotonic() - self.started, 1), **row})
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(timeout=15)
+        r = sorted(x for x in self.rtts if x is not None)
+        return {'event': 'net_summary', 'samples': len(r), **({'rtt_ms_median': r[len(r) // 2], 'rtt_ms_max': r[-1]} if r else {})}
 
 
 def disable_reviews(client, library):
@@ -355,11 +417,17 @@ class LiveRecords:
         self.last = {}  # unit address -> (use count, use tick): time since an ability use
         # data ids the table lacks: their attack timing, spawn timer and ability counts read as zero (check after a battle)
         self.missing = collections.Counter()
+        # client.json "data_aliases" {skin id: normal id}: a skin's own projectile ids, read as the normal card's
+        # (4 Nov 2026, Tencent's Firecracker skin: shot 71948640 -> 10000071, its 5 sparks 4221067774 -> 10000072)
+        self.aliases = {int(k): int(v) for k, v in (getattr(client, 'data_aliases', None) or {}).items()}
 
     def reset(self):
         self.last = {}
 
     def __call__(self, frame):
+        if self.aliases:  # a copy: the capture keeps what the reader saw
+            frame = {**frame, 'entities': [dict(e, data_id=self.aliases[d]) if (d := (e.get('data_id') or 0) & 0xFFFFFFFF)
+                                           in self.aliases else e for e in frame['entities']]}
         entities = frame['entities']
         ids = {untag(e['address']): (e['side'], e['category']) for e in entities}
         units = self.unit_states(frame)
@@ -713,19 +781,26 @@ def play_battle(stream, first, model, vocab, records, owner, taps, log, *, overl
 
 
 def next_battle(stream, client, finished, taps=None):
-    """The first frame of a new battle, once our side is known on a 'hand' client (the results screen keeps a finished
-    battle active with its tick standing still). With taps (--queue): OK on results / trophy road, then Battle."""
+    """The first frame of a battle whose clock is moving, once our side is known on a 'hand' client; `finished`: (the last
+    battle played, its last tick) or None. The results screen keeps a finished battle active with its tick standing still,
+    so it never counts; a battle re-entered after leaving it counts at whatever tick it has reached (5 Nov 2026: the
+    old rule, a new battle seen before tick 90, ignored a re-entered battle and a friendly started right after another).
+    With taps (--queue): OK on results / trophy road, then Battle."""
     checked = time.monotonic()
-    frame = next(stream)
-    while not (frame['battle_active'] and frame['failure'] == 'none' and frame['chain']['battle'] != finished
-               and frame['game_tick'] < FIRST_DECISION and (client.seat != 'hand' or our_side(client, frame)[0] is not None)):
+    seen = {}  # battle -> the last tick seen
+    while True:
+        frame = next(stream)
+        if frame['battle_active'] and frame['failure'] == 'none':
+            battle, tick = frame['chain']['battle'], frame['game_tick']
+            moving, seen[battle] = battle in seen and tick > seen[battle], tick
+            new = finished is None or battle != finished[0] or tick > finished[1]
+            if moving and new and (client.seat != 'hand' or our_side(client, frame)[0] is not None):
+                return frame
         if taps is not None and time.monotonic() - checked > 5:
             checked = time.monotonic()
             now = screen(client.serial)
             if now:
                 taps.tap(*{'road': ROAD_OK, 'paired': PAIRED_OK}.get(now, BUTTON))
-        frame = next(stream)
-    return frame
 
 
 def watch_battle(stream, first, records, capture):
@@ -778,15 +853,17 @@ def main():
         print(f'{client.name}: waiting for a battle ({"start it and play by hand" if args.watch else "queue" if args.queue else "start it"})...',
               flush=True)
         frame = next_battle(stream, client, finished, taps if args.queue and not args.watch else None)
-        finished = frame['chain']['battle']
         owner, ids = our_side(client, frame)
         if owner is None:
             raise SystemExit(f'cannot tell our side in this battle (accounts {ids})')
         path = out / time.strftime(('watch-' if args.watch else '') + '%Y%m%d_%H%M%S.jsonl')
         with path.open('w') as f:
+            lock = threading.Lock()  # NetWatch logs from its own thread
+
             def log(row):
-                f.write(json.dumps(row) + '\n')
-                f.flush()
+                with lock:
+                    f.write(json.dumps(row) + '\n')
+                    f.flush()
             log({'event': 'checkpoint', 'client': client.name, 'path': None if args.watch else str(checkpoint),
                  'temperature': temperature, 'overlap': overlap, 'ability_cost_overrides': args.ability_costs})
             log({'event': 'roster', 'accounts': ids, 'owner': owner})
@@ -799,6 +876,8 @@ def main():
                                                here / 'cr/observation.py', here / 'cr/diagnostics.py']),
                           'obj_float_names': C.OBJ_FLOAT_NAMES, 'hand_float_names': C.HAND_FLOAT_NAMES,
                           'scalar_names': C.SCALAR_NAMES})
+            net = NetWatch(client, log)
+            seen_misses = collections.Counter(vocab.misses) if vocab else None
             try:
                 if args.watch:
                     records.reset()
@@ -809,12 +888,20 @@ def main():
                                        ability_costs=tuple(args.ability_costs or (None, None)), capture=capture)
             finally:
                 log(capture.close())
+                summary = net.close()
+                log(summary)
+            finished = (frame['chain']['battle'], last['tick'])  # its results screen must not count as a new battle
             alive = {'objects': [o for o in last['objects'] if o['hp'] is None or o['hp'] > 0]}  # the last frame still
             score = (C.crowns(alive, owner), C.crowns(alive, 1 - owner))                     # lists a tower at 0 hp
             log({'event': 'end', 'tick': last['tick'], 'crowns': score})
+            unknown = dict(collections.Counter(vocab.misses) - seen_misses) if vocab else {}
+            if unknown:  # ids the model cannot tell apart (e.g. a new skin's projectile): alias them in client.json
+                log({'event': 'unknown_ids', 'lookups': {str(k): n for k, n in unknown.items()}})
+                print(f'unknown ids this game (lookups): {unknown}', flush=True)
             lost += score[0] < score[1]  # ponytail: equal crowns count as no loss (a tiebreak loss would be missed)
-            print(f'game {game + 1}: crowns {score[0]}-{score[1]} -> {path}' + (f' ({lost} lost)' if args.losses else ''),
-                  flush=True)
+            print(f'game {game + 1}: crowns {score[0]}-{score[1]} -> {path}' + (f' ({lost} lost)' if args.losses else '')
+                  + (f", server RTT median {summary['rtt_ms_median']:.0f} ms, max {summary['rtt_ms_max']:.0f} ms"
+                     if summary.get('samples') else ''), flush=True)
             if args.losses and lost >= args.losses:
                 break
 
