@@ -73,23 +73,29 @@ class Capture:
 
     def audit(self, frame, records, vocab, inputs):
         missing_characters, missing_effects, unknown = set(), set(), set()
+
+        def check(kind, value):
+            # Inspect without counting diagnostic lookups as inference misses.
+            if value is not None and value not in (0, -1):
+                value = int(value) & 0xffffffff
+                if value not in vocab.index:
+                    unknown.add((kind, value))
+
         for entity in frame.get('entities', ()):
             cid = int(entity.get('data_id', 0)) & 0xffffffff
+            cid = records.aliases.get(cid, cid)
             if entity.get('kind') != 0 and entity.get('hp', -1) >= 0 and cid not in records.characters:
                 missing_characters.add(cid)
-            for kind, value in [('data', cid), ('card', entity.get('card_id', 0))]:
-                if value and value != -1 and vocab(value) == 1:
-                    unknown.add((kind, value))
+            check('data', cid)
+            check('card', records.card(entity.get('card_id', 0)))
             for buff in (entity.get('us') or {}).get('buffs', ()):
                 effect = int(buff[0]) & 0xffffffff
                 if effect not in records.effects:
                     missing_effects.add(effect)
-                if vocab(effect) == 1:
-                    unknown.add(('effect', effect))
+                check('effect', effect)
         for player in frame.get('players', ()):
             for cid in player.get('deck_card_ids', ()):
-                if cid and vocab(cid) == 1:
-                    unknown.add(('deck_card', cid))
+                check('deck_card', cid)
         self.emit(dict(event='input_audit', tick=frame['game_tick'],
                        missing_characters=sorted(missing_characters), missing_effects=sorted(missing_effects),
                        unknown_vocab=sorted(unknown),
